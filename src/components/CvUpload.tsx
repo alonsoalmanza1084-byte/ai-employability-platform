@@ -51,20 +51,23 @@ export function CvUpload({ versions, onVersionsChanged }: Props) {
     null,
   );
 
-  // Polling mientras hay una versión en proceso.
+  // Derivado: la versión en proceso y su estado (sin setState en efectos).
+  const processingVersion = processingId
+    ? versions.find((x) => x._id === processingId)
+    : undefined;
+  const isProcessing =
+    !!processingVersion &&
+    (processingVersion.status === "processing" ||
+      processingVersion.status === "uploaded");
+  const processingFailed =
+    !!processingVersion && processingVersion.status === "failed";
+
+  // Polling ligero mientras la versión esté en curso (Convex refresca igual).
   useEffect(() => {
-    if (!processingId) return;
+    if (!isProcessing) return;
     const t = setInterval(() => onVersionsChanged(), 2500);
     return () => clearInterval(t);
-  }, [processingId, onVersionsChanged]);
-
-  useEffect(() => {
-    if (!processingId) return;
-    const v = versions.find((x) => x._id === processingId);
-    if (v && (v.status === "ready" || v.status === "failed")) {
-      setProcessingId(null);
-    }
-  }, [versions, processingId]);
+  }, [isProcessing, onVersionsChanged]);
 
   async function handleFile(file: File) {
     setError(null);
@@ -133,7 +136,7 @@ export function CvUpload({ versions, onVersionsChanged }: Props) {
         <Button
           variant="outline"
           size="sm"
-          disabled={busy || !!processingId}
+          disabled={busy || isProcessing}
           onClick={() => inputRef.current?.click()}
         >
           <Upload className="size-4" />
@@ -148,10 +151,17 @@ export function CvUpload({ versions, onVersionsChanged }: Props) {
         </div>
       )}
 
-      {processingId && (
+      {isProcessing && (
         <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
           <Clock className="size-4 animate-pulse" />
           Procesando tu CV con IA… puede tardar unos segundos.
+        </div>
+      )}
+
+      {processingFailed && processingVersion?.failureReason && (
+        <div className="mt-4 flex items-start gap-2 text-sm text-destructive">
+          <AlertCircle className="mt-0.5 size-4 shrink-0" />
+          {processingVersion.failureReason}
         </div>
       )}
 

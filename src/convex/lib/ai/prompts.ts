@@ -3,6 +3,7 @@
  * Cambiar este texto = subir PROMPT_VERSION y registrar en git.
  */
 
+/* eslint-disable no-control-regex -- quitamos caracteres de control a propósito */
 export const PROMPT_VERSION = "cv_extract.v1";
 
 export const CV_EXTRACT_SYSTEM = `Eres un parser de CVs para una plataforma de empleabilidad. Tu única tarea es convertir el texto de UN documento en JSON estructurado, sin opinar ni evaluar.

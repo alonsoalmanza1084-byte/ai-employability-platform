@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- helpers de servidor con ctx loose */
 import { getAuthUserId } from "@convex-dev/auth/server";
 import type { Doc, Id } from "../_generated/dataModel";
 

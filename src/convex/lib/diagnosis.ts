@@ -3,8 +3,6 @@
  * Solo señales del perfil del candidato. Sin promesas de resultados:
  * oportunidades y rangos solo cuando hay datos suficientes.
  */
-import type { CvExtraction } from "./ai/schemas";
-
 export interface ProfileData {
   fullName?: string;
   headline?: string;

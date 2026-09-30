@@ -480,7 +480,7 @@ function ApplicationDetail({
   const [error, setError] = useState<string | null>(null);
 
   const application = useMemo(
-    () => apps?.find((a: any) => a.application._id === applicationId)?.application,
+    () => apps?.find((a) => a.application._id === applicationId)?.application,
     [apps, applicationId],
   );
 
@@ -735,14 +735,13 @@ function ApplicationDetail({
 export default function Org() {
   const { orgId, jobId, appId } = useParams();
   const navigate = useNavigate();
-  const { user, signOut } = useAuth();
+  const { signOut } = useAuth();
   const orgs = useQuery(api.orgs.myOrgs);
   const createOrg = useMutation(api.orgs.create);
 
   const [newOrgOpen, setNewOrgOpen] = useState(false);
   const [orgName, setOrgName] = useState("");
   const [newJobOpen, setNewJobOpen] = useState(false);
-  const [uploadOpen, setUploadOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const activeOrgId = orgId as Id<"organizations"> | undefined;
@@ -981,7 +980,7 @@ function JobApplicants({
   const [uploadOpen, setUploadOpen] = useState(false);
 
   const processing = apps?.some(
-    (a: any) =>
+    (a) =>
       a.application.extractStatus === "processing" ||
       a.application.extractStatus === "uploaded",
   );
@@ -1029,40 +1028,58 @@ function JobApplicants({
             </p>
           )}
           <ul className="mt-6 divide-y divide-border rounded-md border border-border">
-            {apps.map(({ application, match }: any) => (
-              <li key={application._id}>
-                <button
-                  className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left transition-colors hover:bg-muted/40"
-                  onClick={() =>
-                    navigate(
-                      `/org/${orgId}/job/${jobId}/app/${application._id}`,
-                    )
-                  }
-                >
-                  <div className="flex min-w-0 items-center gap-4">
-                    <div
-                      aria-hidden
-                      className="flex size-10 shrink-0 items-center justify-center rounded-full border border-border text-sm font-semibold tabular-nums"
+            {apps.map(
+              (item: {
+                application: {
+                  _id: Id<"applications">;
+                  fullName: string;
+                  status: string;
+                  extractStatus: string;
+                  failureReason?: string;
+                  structured?: {
+                    headline?: string;
+                  } | null;
+                };
+                match: { overall: number } | null;
+              }) => {
+                const application = item.application;
+                const match = item.match;
+                return (
+                  <li key={application._id}>
+                    <button
+                      className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left transition-colors hover:bg-muted/40"
+                      onClick={() =>
+                        navigate(
+                          `/org/${orgId}/job/${jobId}/app/${application._id}`,
+                        )
+                      }
                     >
-                      {match ? match.overall : "–"}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">
-                        {application.fullName}
-                      </p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {application.extractStatus === "failed"
-                          ? application.failureReason ?? "Error de análisis"
-                          : application.extractStatus === "ready"
-                            ? application.structured?.headline ?? "Sin titular"
-                            : "Analizando CV…"}
-                      </p>
-                    </div>
-                  </div>
-                  <StatusBadge status={application.status} />
-                </button>
-              </li>
-            ))}
+                      <div className="flex min-w-0 items-center gap-4">
+                        <div
+                          aria-hidden
+                          className="flex size-10 shrink-0 items-center justify-center rounded-full border border-border text-sm font-semibold tabular-nums"
+                        >
+                          {match ? match.overall : "–"}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">
+                            {application.fullName}
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {application.extractStatus === "failed"
+                              ? application.failureReason ?? "Error de análisis"
+                              : application.extractStatus === "ready"
+                                ? application.structured?.headline ?? "Sin titular"
+                                : "Analizando CV…"}
+                          </p>
+                        </div>
+                      </div>
+                      <StatusBadge status={application.status} />
+                    </button>
+                  </li>
+                );
+              },
+            )}
           </ul>
         </>
       )}

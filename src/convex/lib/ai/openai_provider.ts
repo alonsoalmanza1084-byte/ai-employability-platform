@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- SDK tipado de forma heterogénea entre versiones */
 import type {
   AIProvider,
   AIRequest,

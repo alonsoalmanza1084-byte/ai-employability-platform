@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- ctx loose y tipos de extracción ya validados con zod */
 import { v } from "convex/values";
 import { action, mutation, query } from "./_generated/server";
 import {

@@ -14,6 +14,7 @@ import { detectMime, extractText, MAX_FILE_BYTES } from "./lib/cv/parse";
 
 import { computeMatch, type MatchRequirementInput } from "./lib/matching";
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- ctx loose y tipos de extracción ya validados con zod */
 /**
  * Aplicaciones (CVs subidos por recruiters a una vacante).
  * Aislamiento: todas las lecturas resuelven la org del recurso y verifican
@@ -29,7 +30,7 @@ export const initUpload = mutation({
   },  handler: async (ctx, args) => {
     const job: any = await ctx.db.get(args.jobId);
     if (!job) throw new Error("NOT_FOUND");
-    const { userId } = await requireMembership(ctx, job.organizationId, "recruiter");
+    await requireMembership(ctx, job.organizationId, "recruiter");
 
     if (args.fileSize > MAX_FILE_BYTES) {
       throw new Error("El archivo supera 10 MB.");

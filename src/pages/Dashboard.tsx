@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useAction, useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { useNavigate } from "react-router";
 import {
   Briefcase,
@@ -15,7 +15,6 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -27,15 +26,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { CvUpload } from "@/components/CvUpload";
 
 type Profile = Doc<"candidateProfiles">;
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt className="eyebrow">{label}</dt>
-      <dd className="mt-1 text-sm font-medium">{value || "—"}</dd>
-    </div>
-  );
-}
+type ResumeGroup = { resume: Doc<"resumes">; versions: Doc<"resumeVersions">[] };
 
 function ScoreRing({ score, label }: { score: number; label: string }) {
   return (
@@ -359,7 +350,7 @@ function BasicsEditor({ profile }: { profile: Profile }) {
   );
 }
 
-function MiCv({ profile, resumes }: { profile: Profile; resumes: any[] }) {
+function MiCv({ profile }: { profile: Profile }) {
   return (
     <section aria-labelledby="cv-title" className="mt-12">
       <div className="hairline-b pb-4">
@@ -483,9 +474,9 @@ export default function Dashboard() {
 
   const [tab, setTab] = useState<"cv" | "diagnostico">("diagnostico");
 
-  const activeVersions = useMemo(() => {
+  const activeVersions: Doc<"resumeVersions">[] = useMemo(() => {
     if (!resumes) return [];
-    return resumes.flatMap((r: any) => r.versions as any[]);
+    return (resumes as ResumeGroup[]).flatMap((r) => r.versions);
   }, [resumes]);
 
   const handleSignOut = async () => {
@@ -575,7 +566,7 @@ export default function Dashboard() {
                   )}
                 </div>
               )}
-              {tab === "cv" && <MiCv profile={profile} resumes={resumes} />}
+              {tab === "cv" && <MiCv profile={profile} />}
             </div>
 
             <div className="mt-4">

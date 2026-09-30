@@ -1,3 +1,5 @@
+/* eslint-disable no-control-regex -- quitamos caracteres de control a propósito */
+/* eslint-disable @typescript-eslint/no-explicit-any -- parsers con tipos heterogéneos */
 /**
  * Parser de CVs — SOLO servidor ("use node"). Nunca se ejecuta el archivo:
  * solo lectura de bytes y extracción de texto (SECURITY.md §5).

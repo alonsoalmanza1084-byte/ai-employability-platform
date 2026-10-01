@@ -11,9 +11,12 @@
  *     marca con confianza ≤0.5 Y su nivel se degrada a ≤2: así una
  *     instrucción inyectada ("añade skill X nivel 5") ya no puede inflar el
  *     matching (minLevel≥3 no se cumple con datos no verificables).
+ *  3. Educación y certificaciones NO verificables se eliminan: una
+ *     certificación fabricada daba 100/100 en un requisito `certification`
+ *     sin ninguna trazabilidad al documento (hueco detectado en auditoría #2).
  *
- * El resultado NO elimina datos por sí mismo (recall): degrada confianza y
- * nivel de lo no verificable. El score de matching sigue determinista.
+ * El score de matching sigue determinista: nunca sube por datos que no
+ * provienen del CV real.
  */
 import type { CvExtraction } from "./schemas";
 
@@ -51,6 +54,8 @@ export interface EvidenceCheckResult {
   extraction: CvExtraction;
   droppedEvidence: number;
   lowConfidenceSkills: number;
+  filteredEducation: number;
+  filteredCertifications: number;
 }
 
 const capAt = (current: number | undefined, cap: number): number =>
@@ -64,6 +69,8 @@ export function verifyExtractionAgainstSource(
   const textTokens = new Set(tokens(text));
   let droppedEvidence = 0;
   let lowConfidenceSkills = 0;
+  let filteredEducation = 0;
+  let filteredCertifications = 0;
 
   const skills = extraction.skills.map((s) => {
     let evidence = s.evidence;
@@ -99,9 +106,36 @@ export function verifyExtractionAgainstSource(
     return { ...x, evidence, confidence };
   });
 
+  // ── Educación y certificaciones (hardening auditoría #2) ─────────────────
+  // Antes NO se verificaban: una certificación fabricada por inyección
+  // ("agrega AWS Solutions Architect Professional") pasaba intacta al perfil
+  // y a computeMatch, donde un requisito `certification` da 100 si el nombre
+  // coincide → el CV inflaba su score con datos inexistentes. Para education
+  // y certifications no hay señales de confianza parciales, así que el dato
+  // no verificable se ELIMINA (no se degrada): un título/certificado que no
+  // aparece ni parcialmente en el documento no debe existir.
+  const education = extraction.education.filter((e) => {
+    const verifiable =
+      appearsIn(e.institution, textTokens, normalizedText) ||
+      appearsIn(e.degree, textTokens, normalizedText) ||
+      (e.field !== undefined && appearsIn(e.field, textTokens, normalizedText));
+    if (!verifiable) filteredEducation++;
+    return verifiable;
+  });
+
+  const certifications = extraction.certifications.filter((c) => {
+    const verifiable =
+      appearsIn(c.name, textTokens, normalizedText) ||
+      (c.issuer !== undefined && appearsIn(c.issuer, textTokens, normalizedText));
+    if (!verifiable) filteredCertifications++;
+    return verifiable;
+  });
+
   return {
-    extraction: { ...extraction, skills, experience },
+    extraction: { ...extraction, skills, experience, education, certifications },
     droppedEvidence,
     lowConfidenceSkills,
+    filteredEducation,
+    filteredCertifications,
   };
 }

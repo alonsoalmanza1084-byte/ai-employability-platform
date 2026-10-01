@@ -44,6 +44,12 @@ const norm = (s: string) =>
 function findSkill(text: string, skills: CvExtraction["skills"]) {
   const needle = norm(text);
   return skills.find((s) => {
+    // Hardening (auditoría #2): una skill con confianza degradada por el
+    // post-check de evidencia (≤0.5 = no verificable contra el CV) NO puede
+    // aportar puntos — antes, un fantasma degradado a nivel 2 seguía dando
+    // 20–40 puntos parciales en requisitos con minLevel alto. Las skills
+    // humanas (sin confidence) y las de IA con confianza alta sí cuentan.
+    if (s.confidence !== undefined && s.confidence < 0.6) return false;
     const hay = norm(s.name);
     return hay === needle || hay.includes(needle) || needle.includes(hay);
   });

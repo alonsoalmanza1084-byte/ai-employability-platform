@@ -11,6 +11,10 @@ import {
 } from "./lib/audit";
 import { DAY_MS, LIMITS } from "./lib/limits";
 
+/** Techo estructural de la org: miembros e invitaciones listadas (audit #2). */
+const ORG_MEMBERS_PAGE = 500;
+const ORG_INVITES_PAGE = 200;
+
 /** Organizaciones del usuario autenticado. */
 export const myOrgs = query({
   args: {},
@@ -20,7 +24,7 @@ export const myOrgs = query({
     const memberships = await ctx.db
       .query("organizationMembers")
       .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
+      .take(ORG_MEMBERS_PAGE);
     const orgs = [];
     for (const m of memberships) {
       const org = await ctx.db.get(m.organizationId);
@@ -91,7 +95,7 @@ export const members = query({
     return await ctx.db
       .query("organizationMembers")
       .withIndex("by_org", (q) => q.eq("organizationId", args.organizationId))
-      .collect();
+      .take(ORG_MEMBERS_PAGE);
   },
 });
 
@@ -131,11 +135,12 @@ export const invite = mutation({
     const token = randomToken(24);
     const tokenHash = await hashToken(token);
 
-    // ¿Ya es miembro?
+    // ¿Ya es miembro? (lectura acotada — auditoría #2; un email ya está
+    // limitado a una cuenta por Convex Auth)
     const existingUsers = await ctx.db
       .query("users")
       .withIndex("email", (q) => q.eq("email", email))
-      .collect();
+      .take(2);
     const existingUser = existingUsers[0];
     if (existingUser && !existingUser.isAnonymous) {
       const already = await ctx.db
@@ -244,6 +249,6 @@ export const pendingInvites = query({
       .withIndex("by_org_status", (q) =>
         q.eq("organizationId", args.organizationId).eq("status", "pending"),
       )
-      .collect();
+      .take(ORG_INVITES_PAGE);
   },
 });

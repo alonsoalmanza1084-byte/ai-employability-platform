@@ -9,6 +9,14 @@ import { describe, expect, it } from "vitest";
 
 const SRC = join(__dirname, "..", "..", "src", "convex");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
+
+/** Código sin comentarios (para regexes que no deben coincidir con docstrings). */
+function stripComments(code: string): string {
+  return code
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+}
+
 const allConvexSources = (): { file: string; code: string }[] =>
   (readdirSync(SRC, { recursive: true }) as string[])
     .filter((f) => f.endsWith(".ts") && !f.includes("_generated"))
@@ -211,5 +219,148 @@ describe("multi-tenancy: toda función pública de org verifica membresía", () 
       expect(code, `${file} expone auditLog públicamente`).not.toMatch(/export const \w+ = (mutation|query)\(\{[\s\S]{0,400}?"auditLog"/);
       expect(code, `${file} expone securityEvents públicamente`).not.toMatch(/export const \w+ = (mutation|query)\(\{[\s\S]{0,400}?"securityEvents"/);
     }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// AUDITORÍA #2 — hardening estructural verificado estáticamente.
+// ───────────────────────────────────────────────────────────────────────
+
+describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
+  it("la lista pública declarada es EXACTAMENTE la superficie real (sin funciones sin clasificar)", () => {
+    // Inventario autorizado: función → visibilidad esperada.
+    // Cualquier función nueva SIN aparecer aquí rompe el test: obliga a
+    // clasificarla (pública con auth, o internal) antes de fusionar.
+    const INVENTORY: Record<string, string> = {
+      // users (template)
+      "users.ts:currentUser": "query", // pública, devuelve null sin sesión (template, READ-ONLY)
+      // candidates — candidata: requireSelf + ownership en cada recurso
+      "candidates.ts:myProfile": "query",
+      "candidates.ts:myResumes": "query",
+      "candidates.ts:diagnosis": "query",
+      "candidates.ts:initUpload": "mutation",
+      "candidates.ts:finalizeUpload": "mutation",
+      "candidates.ts:ingestCv": "action",
+      "candidates.ts:setActiveVersion": "mutation",
+      "candidates.ts:updateProfile": "mutation",
+      "candidates.ts:getVersionForIngest": "internalQuery",
+      "candidates.ts:countExtractionAttempts": "internalQuery",
+      "candidates.ts:markProcessing": "internalMutation",
+      "candidates.ts:markFailed": "internalMutation",
+      "candidates.ts:recordExtraction": "internalMutation",
+      "candidates.ts:applyExtraction": "internalMutation",
+      // applications — org: requireMembership en cada recurso
+      "applications.ts:initUpload": "mutation",
+      "applications.ts:finalizeUpload": "mutation",
+      "applications.ts:ingestCv": "action",
+      "applications.ts:listByJob": "query",
+      "applications.ts:decide": "mutation",
+      "applications.ts:addNote": "mutation",
+      "applications.ts:notesFor": "query",
+      "applications.ts:getForIngest": "internalQuery",
+      "applications.ts:countExtractionAttempts": "internalQuery",
+      "applications.ts:markProcessing": "internalMutation",
+      "applications.ts:markFailed": "internalMutation",
+      "applications.ts:recordExtraction": "internalMutation",
+      "applications.ts:applyExtraction": "internalMutation",
+      // jobs / matches / orgs
+      "jobs.ts:listByOrg": "query",
+      "jobs.ts:get": "query",
+      "jobs.ts:create": "mutation",
+      "jobs.ts:close": "mutation",
+      "matches.ts:getForApplication": "query",
+      "orgs.ts:myOrgs": "query",
+      "orgs.ts:create": "mutation",
+      "orgs.ts:members": "query",
+      "orgs.ts:invite": "mutation",
+      "orgs.ts:acceptInvite": "mutation",
+      "orgs.ts:pendingInvites": "query",
+      // account (privacidad, auditoría #2)
+      "account.ts:deleteAccount": "mutation",
+    };
+
+    // 1) Todo lo exportado en el código real está en el inventario con la
+    //    visibilidad correcta.
+    const found = new Set<string>();
+    for (const { file, code } of allConvexSources()) {
+      if (file.startsWith("lib") || file.startsWith("auth") || file === "auth.ts" || file === "http.ts" || file === "schema.ts") continue;
+      const re = /export const (\w+)\s*=\s*(mutation|query|action|internalMutation|internalQuery)\s*\(/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(code)) !== null) {
+        const key = `${file}:${m[1]}`;
+        found.add(key);
+        expect(INVENTORY, `${key} existe en código pero NO está clasificado en el inventario`).toHaveProperty(key);
+        expect(m[2], `${key} visibilidad`).toBe(INVENTORY[key]);
+      }
+    }
+    // 2) Todo el inventario existe en el código (sin entradas fantasma).
+    for (const key of Object.keys(INVENTORY)) {
+      expect(found.has(key), `${key} está en el inventario pero ya no existe en el código`).toBe(true);
+    }
+  });
+
+  it("NO queda ningún v.any() en los módulos de Convex (args validados)", () => {
+    for (const { file, code } of allConvexSources()) {
+      expect(stripComments(code).match(/v\.any\(\)/), `${file} aún usa v.any()`).toBeNull();
+    }
+  });
+
+  it("schemaValidation está ACTIVADO (no hay schemaValidation: false)", () => {
+    const schema = read("schema.ts");
+    expect(schema).not.toMatch(/schemaValidation\s*:\s*false/);
+    // Los campos que rompían la validación siguen tipados:
+    expect(schema).toMatch(/otpSendLog/); // tabla del throttle OTP
+  });
+
+  it("las lecturas públicas están acotadas: sin .collect() en queries/mutations de listado", () => {
+    // whitelist: los .collect() permitidos (acciones internas con techo por
+    // diseño o Lecturas que requieren el set completo; cada una acotada por
+    // límites estructurales). Todo lo demás debe usar .take(N).
+    const ALLOWED: [string, string][] = [
+      ["account.ts", "deleteAccount"], // borrado en cascada acotado por take()s internos
+    ];
+    for (const { file, code } of allConvexSources()) {
+      if (!/[a-z]\.ts$/.test(file) || file.startsWith("lib")) continue;
+      if (ALLOWED.some(([f]) => f === file)) continue;
+      expect(stripComments(code).match(/\.collect\(\)/), `${file} usa .collect() sin límite`).toBeNull();
+    }
+  });
+
+  it("requireMembership niega roles desconocidos (fail-closed)", () => {
+    const rbac = read("lib/rbac.ts");
+    expect(rbac).toMatch(/memberRank === undefined/);
+    expect(rbac).toMatch(/FORBIDDEN/);
+  });
+
+  it("countUsage acota su lectura (take, no collect)", () => {
+    const auditCode = stripComments(read("lib/audit.ts"));
+    expect(auditCode).toMatch(/COUNT_USAGE_MAX/);
+    expect(auditCode).not.toMatch(/\.collect\(\)/);
+  });
+
+  it("el throttle de OTP existe y está cableado en el provider de email", () => {
+    expect(read("auth/otpThrottle.ts")).toMatch(/otpSendsPerEmailPerHour/);
+    const provider = read("auth/emailOtp.ts");
+    expect(provider).toMatch(/verifyOtpSendLimit/);
+    // El límite corre ANTES del envío HTTP (orden en el código fuente).
+    expect(provider.indexOf("verifyOtpSendLimit")).toBeLessThan(provider.indexOf("axios.post"));
+  });
+
+  it("evidence post-check filtra educación/certificaciones no verificables", () => {
+    const ev = read("lib/ai/evidence.ts");
+    expect(ev).toMatch(/filteredEducation/);
+    expect(ev).toMatch(/filteredCertifications/);
+    // El filtro se aplica dentro de verifyExtractionAgainstSource (ambos mods)
+    expect(ev).toMatch(/education\.filter/);
+    expect(ev).toMatch(/certifications\.filter/);
+  });
+
+  it("deleteAccount borra binarios de storage y sesiones (retención)", () => {
+    const account = read("account.ts");
+    expect(account).toMatch(/storage\.delete/);
+    expect(account).toMatch(/authSessions/);
+    expect(account).toMatch(/authAccounts/); // anti-resurrección OTP
+    expect(account).toMatch(/organizationMembers/);
+    expect(account).toMatch(/email: .+@deleted\.invalid/);
   });
 });

@@ -31,6 +31,10 @@ import {
 } from "./lib/ai/prompts";
 import { cvExtractionJsonSchema, cvExtractionSchema } from "./lib/ai/schemas";
 import { verifyExtractionAgainstSource } from "./lib/ai/evidence";
+import {
+  aiExtractionValidator,
+  diagnosisValidator,
+} from "./lib/ai/validators";
 import { detectMime, extractText, MAX_FILE_BYTES } from "./lib/cv/parse";
 
 /** Perfil del usuario autenticado (o null si aún no tiene). */
@@ -54,13 +58,13 @@ export const myResumes = query({
     const resumes = await ctx.db
       .query("resumes")
       .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
+      .take(LIMITS.maxCvVersionsPerResume);
     const out = [];
     for (const r of resumes) {
       const versions = await ctx.db
         .query("resumeVersions")
         .withIndex("by_resume", (q) => q.eq("resumeId", r._id))
-        .collect();
+        .take(LIMITS.maxCvVersionsPerResume);
       versions.sort((a, b) => b.version - a.version);
       out.push({ resume: r, versions });
     }
@@ -170,7 +174,13 @@ export const finalizeUpload = mutation({
     const siblings = await ctx.db
       .query("resumeVersions")
       .withIndex("by_resume", (q) => q.eq("resumeId", resume!._id))
-      .collect();
+      .take(LIMITS.maxCvVersionsPerResume);
+    if (siblings.length >= LIMITS.maxCvVersionsPerResume) {
+      await ctx.storage.delete(args.storageId);
+      throw new Error(
+        `Límite de ${LIMITS.maxCvVersionsPerResume} versiones de CV alcanzado.`,
+      );
+    }
     const version = siblings.length + 1;
 
     const resumeVersionId = await ctx.db.insert("resumeVersions", {
@@ -347,7 +357,10 @@ export const getVersionForIngest = internalQuery({
   },
 });
 
-/** Cuenta intentos de extracción de una versión (cap anti-abuso). INTERNAL. */
+/**
+ * Cuenta intentos de extracción de una versión (cap anti-abuso). INTERNAL.
+ * Lectura acotada (audit #2): el cap es 3; sobran 10 filas de margen.
+ */
 export const countExtractionAttempts = internalQuery({
   args: { resumeVersionId: v.id("resumeVersions") },
   handler: async (ctx, args) => {
@@ -356,7 +369,7 @@ export const countExtractionAttempts = internalQuery({
       .withIndex("by_version", (q) =>
         q.eq("resumeVersionId", args.resumeVersionId),
       )
-      .collect();
+      .take(10);
   },
 });
 
@@ -417,8 +430,10 @@ export const applyExtraction = internalMutation({
   args: {
     resumeVersionId: v.id("resumeVersions"),
     extractedText: v.string(),
-    extraction: v.any(), // ya validado por zod en el action
-    diagnosis: v.any(),
+    // Validación estricta en el borde (antes v.any() — auditoría #2);
+    // el contenido ya pasó por zod + post-check de evidencia en el action.
+    extraction: aiExtractionValidator,
+    diagnosis: diagnosisValidator,
   },
   handler: async (ctx, args) => {
     const userId = await requireSelf(ctx);
@@ -440,7 +455,7 @@ export const applyExtraction = internalMutation({
     const siblings = await ctx.db
       .query("resumeVersions")
       .withIndex("by_resume", (q) => q.eq("resumeId", rv.resumeId))
-      .collect();
+      .take(LIMITS.maxCvVersionsPerResume);
     for (const s of siblings) {
       if (s.isActive && s._id !== args.resumeVersionId) {
         await ctx.db.patch(s._id, { isActive: false });
@@ -501,7 +516,7 @@ export const setActiveVersion = mutation({
     const siblings = await ctx.db
       .query("resumeVersions")
       .withIndex("by_resume", (q) => q.eq("resumeId", rv.resumeId))
-      .collect();
+      .take(LIMITS.maxCvVersionsPerResume);
     for (const s of siblings) {
       await ctx.db.patch(s._id, { isActive: s._id === args.resumeVersionId });
     }

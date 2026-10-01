@@ -327,6 +327,13 @@ const schema = defineSchema(
       detail: v.string(),
     }).index("by_kind", ["kind"]),
 
+    // Registro efímero de envíos de OTP (protección pre-auth email bombing,
+    // auditoría #2). Las filas viejas (>1h) se borran en cada envío.
+    otpSendLog: defineTable({
+      email: v.string(),
+      sentAt: v.number(),
+    }).index("by_email", ["email"]),
+
     notifications: defineTable({
       userId: v.id("users"),
       type: v.string(),

@@ -20,6 +20,7 @@ import { cvExtractionJsonSchema, cvExtractionSchema } from "./lib/ai/schemas";
 import { detectMime, extractText, MAX_FILE_BYTES } from "./lib/cv/parse";
 
 import { computeMatch, type MatchRequirementInput } from "./lib/matching";
+import { aiExtractionValidator } from "./lib/ai/validators";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- ctx loose y tipos de extracción ya validados con zod */
 /**
@@ -27,6 +28,15 @@ import { computeMatch, type MatchRequirementInput } from "./lib/matching";
  * Aislamiento: todas las lecturas resuelven la org del recurso y verifican
  * membresía del actor (nunca se confía en ids del cliente sin validar).
  */
+
+/**
+ * Paginación acotada (auditoría #2): ninguna lectura pública usa .collect()
+ * sin límite — una vacante con miles de aplicantes no puede tumbar una
+ * query (Convex limita lecturas por transacción; además limitamos latency).
+ * V1: primera página (más recientes); paginación por cursor cuando exista UI.
+ */
+const APPLICATIONS_PAGE = 200;
+const NOTES_PAGE = 200;
 
 /** Paso 1: URL de subida directa (recruiter/org_admin, límite por org). */
 export const initUpload = mutation({
@@ -164,7 +174,7 @@ export const countExtractionAttempts = internalQuery({
       .withIndex("by_application", (q) =>
         q.eq("applicationId", args.applicationId),
       )
-      .collect();
+      .take(10);
   },
 });
 
@@ -324,7 +334,9 @@ export const applyExtraction = internalMutation({
   args: {
     applicationId: v.id("applications"),
     extractedText: v.string(),
-    extraction: v.any(), // validado por zod en el action
+    // Validación estricta en el borde (antes v.any() — auditoría #2);
+    // el contenido ya pasó por zod + post-check de evidencia en el action.
+    extraction: aiExtractionValidator,
   },
   handler: async (ctx, args) => {
     const application = await ctx.db.get(args.applicationId);
@@ -354,7 +366,7 @@ export const applyExtraction = internalMutation({
     const requirements: any[] = await ctx.db
       .query("jobRequirements")
       .withIndex("by_job", (q) => q.eq("jobId", (application as any).jobId))
-      .collect();
+      .take(LIMITS.maxRequirementsPerJob);
 
     const matchInputs: MatchRequirementInput[] = requirements.map((r: any) => ({
       id: r._id,
@@ -430,7 +442,7 @@ export const listByJob = query({
     const applications = await ctx.db
       .query("applications")
       .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
-      .collect();
+      .take(APPLICATIONS_PAGE);
     applications.sort((a, b) => b._creationTime - a._creationTime);
 
     const out = [];
@@ -584,7 +596,7 @@ export const notesFor = query({
       .withIndex("by_application", (q) =>
         q.eq("applicationId", args.applicationId),
       )
-      .collect();
+      .take(NOTES_PAGE);
     notes.sort((a, b) => b._creationTime - a._creationTime);
     const withAuthors = [];
     for (const n of notes) {

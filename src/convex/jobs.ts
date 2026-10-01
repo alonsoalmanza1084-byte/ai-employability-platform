@@ -4,6 +4,10 @@ import { requireMembership } from "./lib/rbac";
 import { audit, countUsage, recordUsage } from "./lib/audit";
 import { DAY_MS, LIMITS } from "./lib/limits";
 
+/** Lecturas acotadas (auditoría #2): sin .collect() sin límite. */
+const JOBS_PAGE = 200;
+const REQUIREMENTS_PAGE = 50;
+
 const requirementValidator = v.object({
   type: v.union(
     v.literal("skill"),
@@ -26,7 +30,7 @@ export const listByOrg = query({
     return await ctx.db
       .query("jobs")
       .withIndex("by_org", (q) => q.eq("organizationId", args.organizationId))
-      .collect();
+      .take(JOBS_PAGE);
   },
 });
 
@@ -40,7 +44,7 @@ export const get = query({
     const requirements = await ctx.db
       .query("jobRequirements")
       .withIndex("by_job", (q) => q.eq("jobId", job._id))
-      .collect();
+      .take(REQUIREMENTS_PAGE);
     return { job, requirements };
   },
 });

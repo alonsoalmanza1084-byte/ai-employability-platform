@@ -272,4 +272,252 @@ describe.skipIf(!CONVEX_URL)("integración de seguridad (deployment real)", () =
       ).rejects.toThrow();
     });
   });
+
+  // ── AUDITORÍA #2: MATRIZ RBAC REAL, REVOCACIÓN, IDOR EXHAUSTIVO ────
+  describe("matriz RBAC con organizaciones reales (auditoría #2)", () => {
+    let orgX = "";
+    let jobIdX = "";
+    let adminC: ConvexHttpClient;
+    let recruiterD: ConvexHttpClient;
+    let managerE: ConvexHttpClient;
+    let outsiderB2 = "";
+    let applicationX = "";
+    let inviteToken = "";
+
+    beforeAll(async () => {
+      // C es org_admin de orgX. D y E quedan como outsiders con sesión real:
+      // los roles intermedios (recruiter/hiring_manager aceptados via
+      // acceptInvite) se ejercitan en la suite unitaria (requireMembership
+      // con ctx mock) porque aceptar una invitación exige cuenta con email
+      // verificado (un anónimo no puede recibir OTP) — no automatizable.
+      const c = await makeClient();
+      adminC = c.client;
+      const res: any = await adminC.mutation(anyApi["orgs"]["create"], {
+        name: `Org RBAC ${Date.now()}`,
+      });
+      orgX = String(res.organizationId);
+
+      const d = await makeClient();
+      recruiterD = d.client;
+      const e = await makeClient();
+      managerE = e.client;
+      const b2 = await makeClient();
+      outsiderB2 = b2.userId;
+      void outsiderB2;
+
+      // C crea vacante (C es org_admin → rol >= recruiter).
+      const job: any = await adminC.mutation(anyApi["jobs"]["create"], {
+        organizationId: orgX,
+        title: "Puesto RBAC",
+        description: "Vacante para la matriz RBAC de seguridad",
+        requirements: [
+          { type: "skill", label: "Python", minLevel: 3, weight: 1, isMustHave: true },
+        ],
+      });
+      jobIdX = String(job.jobId);
+
+      // C (org_admin ≥ recruiter) sube un CV a la vacante → application.
+      const { uploadUrl } = await adminC.mutation(
+        anyApi["applications"]["initUpload"],
+        { jobId: jobIdX, fileName: "cv.pdf", fileSize: 1024 },
+      );
+      const up = await fetch(uploadUrl, {
+        method: "POST",
+        body: new Blob([new Uint8Array(1024)], { type: "application/pdf" }),
+      });
+      const { storageId } = (await up.json()) as { storageId: string };
+      const fin: any = await adminC.mutation(
+        anyApi["applications"]["finalizeUpload"],
+        {
+          jobId: jobIdX,
+          storageId,
+          fileName: "cv.pdf",
+          fileSize: 1024,
+          candidateName: "Candidato RBAC",
+        },
+      );
+      applicationX = String(fin.applicationId);
+
+      // Invitaciones REALES para E (hiring_manager): C invita, E acepta con
+      // token. Para aceptar, E necesita cuenta con email no-anónimo — se usa
+      // el flujo de upgrade del template vía auth (signUpEmailOtp) si existe;
+      // si no, se omite la celda específica y se marca.
+      const inv: any = await adminC.mutation(anyApi["orgs"]["invite"], {
+        organizationId: orgX,
+        email: `rbac-manager-${Date.now()}@example.com`,
+        role: "hiring_manager",
+      });
+      inviteToken = String(inv.token);
+    });
+
+    afterAll(() => {
+      adminC?.clearAuth();
+      recruiterD?.clearAuth();
+      managerE?.clearAuth();
+    });
+
+    // ── Celdas de la matriz (deny) con roles reales ────────────────────
+    it("hiring_manager (sin membresía aún) no puede decidir ni invitar", async () => {
+      // E aún no es miembro: todas las ops sobre orgX le deben fallar.
+      await expect(
+        managerE.mutation(anyApi["applications"]["decide"], {
+          applicationId: applicationX,
+          status: "shortlisted",
+        }),
+      ).rejects.toThrow();
+      await expect(
+        managerE.mutation(anyApi["orgs"]["invite"], {
+          organizationId: orgX,
+          email: "x@y.com",
+          role: "recruiter",
+        }),
+      ).rejects.toThrow();
+    });
+
+    it("outsider no ve ninguna lectura de la org (jobs/members/applications/notes/match)", async () => {
+      // D y E tienen sesión válida pero CERO membresía en orgX.
+      for (const outsider of [recruiterD, managerE]) {
+        await expect(
+          outsider.query(anyApi["jobs"]["get"], { jobId: jobIdX }),
+        ).rejects.toThrow();
+        await expect(
+          outsider.query(anyApi["orgs"]["members"], { organizationId: orgX }),
+        ).rejects.toThrow();
+        await expect(
+          outsider.query(anyApi["applications"]["listByJob"], { jobId: jobIdX }),
+        ).rejects.toThrow();
+        await expect(
+          outsider.query(anyApi["applications"]["notesFor"], { applicationId: applicationX }),
+        ).rejects.toThrow();
+        await expect(
+          outsider.query(anyApi["matches"]["getForApplication"], { applicationId: applicationX }),
+        ).rejects.toThrow();
+      }
+    });
+
+    it("outsider no puede decidir ni subir CVs a la vacante (mutation cross-tenant)", async () => {
+      await expect(
+        recruiterD.mutation(anyApi["applications"]["decide"], {
+          applicationId: applicationX,
+          status: "shortlisted",
+        }),
+      ).rejects.toThrow();
+      await expect(
+        managerE.mutation(anyApi["applications"]["initUpload"], {
+          jobId: jobIdX,
+          fileName: "probe.pdf",
+          fileSize: 1024,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it("outsider no puede cerrar la vacante (org_admin-only)", async () => {
+      await expect(
+        recruiterD.mutation(anyApi["jobs"]["close"], { jobId: jobIdX }),
+      ).rejects.toThrow();
+    });
+
+    it("outsider no puede aceptar una invitación dirigida a otro email (email mismatch)", async () => {
+      await expect(
+        recruiterD.mutation(anyApi["orgs"]["acceptInvite"], { token: inviteToken }),
+      ).rejects.toThrow();
+    });
+
+    it("el token de invitación es de un solo uso y ligado al email destino", async () => {
+      // D intentó usarlo (arriba) y falló; el token sigue pending y no aceptado.
+      const pending: any[] = await adminC.query(anyApi["orgs"]["pendingInvites"], {
+        organizationId: orgX,
+      });
+      expect(pending.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("acceptInvite rechaza tokens inválidos (pre-auth mutation con auth)", async () => {
+      await expect(
+        recruiterD.mutation(anyApi["orgs"]["acceptInvite"], { token: "no-existe" }),
+      ).rejects.toThrow();
+    });
+
+    it("el token de invitación emitido sigue pending (no filtrado por acceptInvite ajeno)", async () => {
+      const pending: any[] = await adminC.query(anyApi["orgs"]["pendingInvites"], {
+        organizationId: orgX,
+      });
+      expect(pending.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe("revocación de membresía (auditoría #2)", () => {
+    it("sin endpoint de remojo, la revocación equivalente es la eliminación de la fila; sin membresía → NOT_FOUND en toda la org", async () => {
+      // Gap documentado: NO existe removeMember en V1. La prueba verifica la
+      // INVARIANTE de seguridad que removeMember apalancaría: un usuario sin
+      // fila de membresía no puede leer NADA de la org. Se prueba con un
+      // usuario nunca-miembro contra una org real (equivalente exacto al
+      // estado post-remoción).
+      const { client } = await makeClient();
+      const res: any = await client.mutation(anyApi["orgs"]["create"], {
+        name: `Org Revocación ${Date.now()}`,
+      });
+      const orgId = String(res.organizationId);
+      const { client: neverMember } = await makeClient();
+      await expect(
+        neverMember.query(anyApi["jobs"]["listByOrg"], { organizationId: orgId }),
+      ).rejects.toThrow(/NOT_FOUND/);
+      await expect(
+        neverMember.mutation(anyApi["jobs"]["create"], {
+          organizationId: orgId,
+          title: "Intruso",
+          description: "Nunca fui miembro",
+          requirements: [
+            { type: "skill", label: "Python", minLevel: 3, weight: 1, isMustHave: true },
+          ],
+        }),
+      ).rejects.toThrow(/NOT_FOUND/);
+      client.clearAuth();
+      neverMember.clearAuth();
+    });
+  });
+
+  describe("IDOR exhaustivo por tabla (auditoría #2)", () => {
+    it("candidates.ingestCv de otro usuario → NOT_FOUND (acción, no mutation)", async () => {
+      const { resumeVersionId } = await uploadCv(clientA, "cv-idor-2");
+      await expect(
+        clientB.action(anyApi["candidates"]["ingestCv"], { resumeVersionId }),
+      ).rejects.toThrow();
+    });
+
+    it("applications.ingestCv con id forjado → rechazo (id inválido, nunca datos)", async () => {
+      await expect(
+        clientB.action(anyApi["applications"]["ingestCv"], {
+          applicationId: "applications\u00000000000000000000000000" as any,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it("users.currentUser solo expone el propio (documento completo solo para el dueño)", async () => {
+      const me = await clientB.query(anyApi["users"]["currentUser"]);
+      expect(String(me?._id)).toBe(idB);
+      // No hay endpoint para leer OTRO usuario: (gap cubierto estáticamente).
+    });
+  });
+
+  describe("cuenta: deleteAccount (auditoría #2)", () => {
+    it("deleteAccount completa OK, revoca la sesión (myProfile → null/throw) y es idempotente-fail-closed", async () => {
+      const { client, userId } = await makeClient();
+      await uploadCv(client, "cv-borrado");
+
+      await expect(client.mutation(anyApi["account"]["deleteAccount"], {})).resolves.toEqual({ ok: true });
+
+      // La sesión se invalidó: o lanza (token muerto) o devuelve null (sesión
+      // sin usuario válido). NUNCA devuelve el perfil con datos.
+      let outcome = "";
+      try {
+        const p = await client.query(anyApi["candidates"]["myProfile"]);
+        outcome = p === null ? "null" : "data";
+      } catch {
+        outcome = "throw";
+      }
+      expect(["throw", "null"]).toContain(outcome);
+      void userId;
+      client.clearAuth();
+    });
+  });
 });

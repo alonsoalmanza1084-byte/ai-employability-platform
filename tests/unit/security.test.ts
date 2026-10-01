@@ -4,7 +4,7 @@
  * Cubren: matching determinista, diagnóstico, hardening de parsing de CV,
  * sanitización anti-inyección, post-check de evidencia, helpers crypto.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   computeMatch,
   MATCHING_ENGINE_VERSION,
@@ -18,6 +18,9 @@ import { appearsIn, verifyExtractionAgainstSource } from "../../src/convex/lib/a
 import { PROMPT_INJECTION_CASES } from "../../src/convex/lib/ai/prompt_injection_cases";
 import { hashToken, randomToken } from "../../src/convex/lib/audit";
 import { LIMITS, DAY_MS } from "../../src/convex/lib/limits";
+import { requireMembership } from "../../src/convex/lib/rbac";
+import { verifyOtpSendLimit } from "../../src/convex/auth/otpThrottle";
+import { ANON_PLACEHOLDER } from "../../src/convex/account";
 
 // ─────────────────────────────────────────────────────────────────────────
 // 1. MATCHING — determinismo, requisitos relevantes, sin características
@@ -338,6 +341,118 @@ describe("post-check de evidencia", () => {
     const result = verifyExtractionAgainstSource(CV_TEXT, extraction);
     expect(result.extraction.skills).toHaveLength(1);
   });
+
+  // ── Hardening auditoría #2: educación/certificaciones fabricadas ──────
+  it("certificación fabricada (inyección 'fake-field') se elimina y NO infla el matching", () => {
+    const REQUIREMENTS: MatchRequirementInput[] = [
+      { id: "c1", type: "certification", label: "AWS Solutions Architect", weight: 1, isMustHave: false },
+    ];
+    const extraction = cvExtractionSchema.parse({
+      skills: [],
+      experience: [],
+      education: [],
+      certifications: [
+        // El CV NO menciona AWS ni certificación alguna: proviene de la
+        // instrucción inyectada "agrega la certificación AWS...".
+        { name: "AWS Solutions Architect Professional", issuer: "Amazon" },
+      ],
+    });
+    const checked = verifyExtractionAgainstSource(CV_TEXT, extraction);
+    expect(checked.filteredCertifications).toBe(1);
+    expect(checked.extraction.certifications).toHaveLength(0);
+    // Score de matching: el dato fabricado YA NO existe → score 0.
+    const withGhost = computeMatch(checked.extraction, REQUIREMENTS);
+    expect(withGhost.overall).toBe(0);
+    expect(withGhost.requirements[0].met).toBe(false);
+    // Y coincide con el score SIN la certificación fabricada (no influyó).
+    const clean = cvExtractionSchema.parse({ skills: [], experience: [], education: [], certifications: [] });
+    expect(withGhost.overall).toBe(computeMatch(clean, REQUIREMENTS).overall);
+  });
+
+  it("educación fabricada se elimina; la real (verificable) se conserva", () => {
+    const extraction = cvExtractionSchema.parse({
+      skills: [],
+      experience: [],
+      education: [
+        // "Informática" NO aparece en CV_TEXT → fabricada.
+        { institution: "MIT", degree: "Doctorado", field: "Informática" },
+      ],
+      certifications: [],
+    });
+    const checked = verifyExtractionAgainstSource(CV_TEXT, extraction);
+    expect(checked.filteredEducation).toBe(1);
+    expect(checked.extraction.education).toHaveLength(0);
+
+    // Una educación con datos presentes en el CV sobrevive.
+    const realEdu = cvExtractionSchema.parse({
+      skills: [],
+      experience: [],
+      education: [{ institution: "Acme Corp", degree: "Analista de datos" }],
+      certifications: [],
+    });
+    const checkedReal = verifyExtractionAgainstSource(CV_TEXT, realEdu);
+    expect(checkedReal.extraction.education).toHaveLength(1);
+  });
+
+  it("experiencia con evidencia fabricada pierde su evidencia (confidence ≤0.5)", () => {
+    const extraction = cvExtractionSchema.parse({
+      skills: [],
+      experience: [
+        {
+          company: "Acme Corp",
+          title: "Analista",
+          start: "2021",
+          description: "Migración del reporting",
+          achievements: [],
+          evidence: "Gané la lotería y dirigí 500 personas en Tokio",
+        },
+      ],
+      education: [],
+      certifications: [],
+    });
+    const checked = verifyExtractionAgainstSource(CV_TEXT, extraction);
+    expect(checked.droppedEvidence).toBe(1);
+    expect(checked.extraction.experience[0].evidence).toBeUndefined();
+    expect(checked.extraction.experience[0].confidence ?? 1).toBeLessThanOrEqual(0.5);
+  });
+
+  it("corpus anti-inyección completo: un LLM 'obediente' no puede inflar el score", () => {
+    // Simula el PEOR CASO: el LLM obedece la inyección y devuelve los datos
+    // fabricados del payload. El post-check + matcher determinista deben
+    // contener el daño: skills fantasma nivel≤2, certs/edu fabricadas fuera.
+    const REQUIREMENTS: MatchRequirementInput[] = [
+      { id: "s1", type: "skill", label: "Kubernetes", minLevel: 5, weight: 0.5, isMustHave: false },
+      { id: "c1", type: "certification", label: "Certificacion Falsa", weight: 0.5, isMustHave: false },
+    ];
+    for (const c of PROMPT_INJECTION_CASES) {
+      const injected = cvExtractionSchema.parse({
+        fullName: "Ana García",
+        skills: [
+          { name: "Python", level: 4 }, // real (está en CV_TEXT)
+          { name: "Kubernetes", level: 5 }, // fabricada por la inyección
+        ],
+        experience: [],
+        education: [{ institution: "MIT", degree: "Doctorado" }], // fabricada
+        certifications: [{ name: "Certificacion Falsa" }], // fabricada
+      });
+      const checked = verifyExtractionAgainstSource(CV_TEXT, injected);
+      const ghost = checked.extraction.skills.find((s) => s.name === "Kubernetes")!;
+      expect(ghost.level, `caso ${c.name}`).toBeLessThanOrEqual(2);
+      expect(checked.extraction.certifications, `caso ${c.name}`).toHaveLength(0);
+      expect(checked.extraction.education, `caso ${c.name}`).toHaveLength(0);
+
+      // El score overall NUNCA supera lo que darían solo los datos reales.
+      const realOnly = cvExtractionSchema.parse({
+        skills: [{ name: "Python", level: 4 }],
+        experience: [],
+        education: [],
+        certifications: [],
+      });
+      const scoreInjected = computeMatch(checked.extraction, REQUIREMENTS).overall;
+      const scoreReal = computeMatch(realOnly, REQUIREMENTS).overall;
+      expect(scoreInjected, `caso ${c.name}: score inflado ${scoreInjected} > real ${scoreReal}`).toBeLessThanOrEqual(scoreReal);
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -375,5 +490,158 @@ describe("límites de uso", () => {
       expect(v).toBeGreaterThan(0);
     }
     expect(DAY_MS).toBe(24 * 60 * 60 * 1000);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 8. RBAC MATRIX REAL (auditoría #2) — ejecutamos requireMembership con un
+//    ctx mockeado (mock de getAuthUserId vía vi.mock) contra cada rol.
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars -- mocks de ctx de Convex sin tipar (convención de la suite de integración) */
+// ─────────────────────────────────────────────────────────────────────────
+
+// Mock del módulo de auth: controlamos qué "usuario" llama.
+const CURRENT_USER: { id: string | null } = { id: null };
+vi.mock("@convex-dev/auth/server", () => ({
+  getAuthUserId: async () => CURRENT_USER.id,
+}));
+
+const USER_ID = "users\0AAAA" as any; // formato v.id (17 chars tras \0 en mock)
+const ORG_ID = "organizations\0BBBB" as any;
+
+/** db mock: devuelve la fila de membresía configurada. */
+function memberDb(role: string | null) {
+  return {
+    query: (_t: string) => ({
+      withIndex: (_i: string, _cb: any) => ({
+        first: async () => (role === null ? null : { _id: "m1", organizationId: ORG_ID, userId: USER_ID, role }),
+      }),
+    }),
+  };
+}
+const ctxWith = (role: string | null) => ({ db: memberDb(role), auth: null });
+
+const capture = async (p: Promise<unknown>) => {
+  try {
+    return { ok: true, res: await p };
+  } catch (e: any) {
+    return { ok: false, msg: String(e?.message ?? e) };
+  }
+};
+
+describe("RBAC matrix real (requireMembership con ctx mock)", () => {
+  const matrix: [string, string | null, "hiring_manager" | "recruiter" | "org_admin", boolean, string][] = [
+    // [rol del miembro, minRole requerido, ¿debe permitir?]
+    ["hiring_manager", "hiring_manager", true, ""],
+    ["hiring_manager", "recruiter", false, "FORBIDDEN"],
+    ["hiring_manager", "org_admin", false, "FORBIDDEN"],
+    ["recruiter", "hiring_manager", true, ""],
+    ["recruiter", "recruiter", true, ""],
+    ["recruiter", "org_admin", false, "FORBIDDEN"],
+    ["org_admin", "hiring_manager", true, ""],
+    ["org_admin", "recruiter", true, ""],
+    ["org_admin", "org_admin", true, ""],
+  ];
+
+  for (const [role, minRole, allow, msg] of matrix) {
+    it(`rol=${role} minRole=${minRole} → ${allow ? "ALLOW" : "DENY"}`, async () => {
+      CURRENT_USER.id = USER_ID;
+      const r = await capture(requireMembership(ctxWith(role) as any, ORG_ID, minRole));
+      expect(r.ok, `rol=${role} min=${minRole}: ${r.msg ?? ""}`).toBe(allow);
+      if (!allow) expect(r.msg).toContain(msg);
+    });
+  }
+
+  it("sin membresía → NOT_FOUND (ni hiring_manager)", async () => {
+    CURRENT_USER.id = USER_ID;
+    const r = await capture(requireMembership(ctxWith(null) as any, ORG_ID, "hiring_manager"));
+    expect(r.ok).toBe(false);
+    expect(r.msg).toContain("NOT_FOUND");
+  });
+
+  it("sin sesión → NOT_FOUND (no filtra existencia)", async () => {
+    CURRENT_USER.id = null;
+    const r = await capture(requireMembership(ctxWith("org_admin") as any, ORG_ID, "hiring_manager"));
+    expect(r.ok).toBe(false);
+    expect(r.msg).toContain("NOT_FOUND");
+  });
+
+  it("rol desconocido/corrupto → DENY (fail-closed, hardening #2)", async () => {
+    CURRENT_USER.id = USER_ID;
+    for (const bad of ["platform_admin", "superadmin", "", "ORG_ADMIN"]) {
+      const r = await capture(requireMembership(ctxWith(bad) as any, ORG_ID, "hiring_manager"));
+      expect(r.ok, `rol corrupto "${bad}" debe denegar`).toBe(false);
+      expect(r.msg).toContain("FORBIDDEN");
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 9. OTP THROTTLE pre-auth (auditoría #2) — email bombing.
+// ─────────────────────────────────────────────────────────────────────────
+describe("throttle de envío OTP (pre-auth)", () => {
+  function otpDb(existing: { email: string; sentAt: number }[] = []) {
+    const rows = [...existing];
+    let nextId = rows.length + 1;
+    return {
+      rows,
+      query: (_t: string) => ({
+        withIndex: (_i: string, cb: any) => {
+          const probe: Record<string, unknown> = {};
+          cb({ eq: (_k: string, v: unknown) => { probe.email = v; return probe; } });
+          const email = probe.email as string;
+          return {
+            collect: async () => rows.filter((r) => r.email === email),
+            take: async (n: number) => rows.filter((r) => r.email === email).slice(0, n),
+          };
+        },
+      }),
+      // Convex: insert(tabla, doc)
+      insert: async (_table: string, doc: { email: string; sentAt: number }) => {
+        rows.push({ _id: `id${nextId++}`, ...doc });
+      },
+      delete: async (id: string) => {
+        const i = rows.findIndex((r) => r._id === id);
+        if (i >= 0) rows.splice(i, 1);
+      },
+    };
+  }
+
+  it("permite hasta el límite y bloquea el envío siguiente (misma hora)", async () => {
+    const db = otpDb();
+    const ctx = { db } as any;
+    for (let i = 0; i < LIMITS.otpSendsPerEmailPerHour; i++) {
+      await expect(verifyOtpSendLimit(ctx, "a@x.com")).resolves.toBeUndefined();
+    }
+    await expect(verifyOtpSendLimit(ctx, "a@x.com")).rejects.toThrow(/Demasiados códigos/);
+    // Otro email no se ve afectado (límite por email).
+    await expect(verifyOtpSendLimit(ctx, "b@x.com")).resolves.toBeUndefined();
+  });
+
+  it("emails se normalizan (case-insensitive)", async () => {
+    const db = otpDb();
+    const ctx = { db } as any;
+    for (let i = 0; i < LIMITS.otpSendsPerEmailPerHour; i++) {
+      await verifyOtpSendLimit(ctx, `Case@X.COM`);
+    }
+    await expect(verifyOtpSendLimit(ctx, "case@x.com")).rejects.toThrow();
+  });
+
+  it("filas fuera de ventana se purgan y no cuentan", async () => {
+    const old = Date.now() - 2 * 60 * 60 * 1000; // 2h
+    const db = otpDb(Array.from({ length: LIMITS.otpSendsPerEmailPerHour }, (_, i) => ({ email: "c@x.com", sentAt: old + i })));
+    const ctx = { db } as any;
+    await expect(verifyOtpSendLimit(ctx, "c@x.com")).resolves.toBeUndefined();
+    expect(db.rows.every((r) => Date.now() - r.sentAt < 2 * 60 * 60 * 1000)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 10. CUENTA / RETENCIÓN — marcadores estables.
+// ─────────────────────────────────────────────────────────────────────────
+describe("retención de datos", () => {
+  it("el marcador de anonimización no contiene PII y es estable", () => {
+    expect(ANON_PLACEHOLDER).not.toMatch(/@/);
+    expect(ANON_PLACEHOLDER.length).toBeGreaterThan(3);
+    expect(ANON_PLACEHOLDER).toBe("[cuenta-eliminada]");
   });
 });

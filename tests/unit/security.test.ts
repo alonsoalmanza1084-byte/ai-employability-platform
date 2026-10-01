@@ -19,7 +19,10 @@ import { PROMPT_INJECTION_CASES } from "../../src/convex/lib/ai/prompt_injection
 import { hashToken, randomToken } from "../../src/convex/lib/audit";
 import { LIMITS, DAY_MS } from "../../src/convex/lib/limits";
 import { requireMembership } from "../../src/convex/lib/rbac";
-import { verifyOtpSendLimit } from "../../src/convex/auth/otpThrottle";
+import {
+  OTP_GLOBAL_HOURLY_CAP,
+  verifyOtpSendLimit,
+} from "../../src/convex/auth/otpThrottle";
 import { ANON_PLACEHOLDER } from "../../src/convex/account";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -585,6 +588,11 @@ describe("throttle de envío OTP (pre-auth)", () => {
     return {
       rows,
       query: (_t: string) => ({
+        // Capa 2 (backstop global): lectura sin índice, orden por _creationTime desc.
+        order: (_dir: "asc" | "desc") => ({
+          take: async (n: number) =>
+            [...rows].sort((a, b) => b.sentAt - a.sentAt).slice(0, n),
+        }),
         withIndex: (_i: string, cb: any) => {
           const probe: Record<string, unknown> = {};
           cb({ eq: (_k: string, v: unknown) => { probe.email = v; return probe; } });
@@ -632,6 +640,48 @@ describe("throttle de envío OTP (pre-auth)", () => {
     const ctx = { db } as any;
     await expect(verifyOtpSendLimit(ctx, "c@x.com")).resolves.toBeUndefined();
     expect(db.rows.every((r) => Date.now() - r.sentAt < 2 * 60 * 60 * 1000)).toBe(true);
+  });
+
+  it("el backstop global corta la rotación de emails (capa 2, sin IP disponible)", async () => {
+    const now = Date.now();
+    // 200 envíos recientes repartidos en 200 emails DISTINTOS: el bucket por email
+    // no los frenaría (1 cada uno) → solo el backstop global puede detener el abuso.
+    const rotated = Array.from({ length: OTP_GLOBAL_HOURLY_CAP }, (_, i) => ({
+      email: `rot${i}@x.com`,
+      sentAt: now - 1000,
+    }));
+    const db = otpDb(rotated);
+    const ctx = { db } as any;
+    await expect(verifyOtpSendLimit(ctx, "nuevo@x.com")).rejects.toThrow(
+      /saturado/,
+    );
+    // Email nuevo, nunca visto: el bloqueo es agregado, no permite enumeración de emails.
+    expect(db.rows.some((r) => r.email === "nuevo@x.com")).toBe(false);
+  });
+
+  it("el backstop global NO cuenta envíos fuera de la ventana horaria", async () => {
+    const old = Date.now() - 2 * 60 * 60 * 1000;
+    const stale = Array.from({ length: OTP_GLOBAL_HOURLY_CAP + 50 }, (_, i) => ({
+      email: `old${i}@x.com`,
+      sentAt: old + i,
+    }));
+    const db = otpDb(stale);
+    const ctx = { db } as any;
+    await expect(verifyOtpSendLimit(ctx, "fresh@x.com")).resolves.toBeUndefined();
+  });
+
+  it("el límite por email sigue aplicándose aunque el global esté lejos del tope", async () => {
+    const db = otpDb();
+    const ctx = { db } as any;
+    for (let i = 0; i < LIMITS.otpSendsPerEmailPerHour; i++) {
+      await verifyOtpSendLimit(ctx, "solo@x.com");
+    }
+    await expect(verifyOtpSendLimit(ctx, "solo@x.com")).rejects.toThrow(
+      /Demasiados códigos/,
+    );
+    expect(db.rows.filter((r) => r.email === "solo@x.com")).toHaveLength(
+      LIMITS.otpSendsPerEmailPerHour,
+    );
   });
 });
 

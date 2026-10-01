@@ -14,7 +14,6 @@
  *
  * Sin product features: este es un harness de evaluación, no código de app.
  */
-/* eslint-disable @typescript-eslint/no-explicit-any -- igual que el resto del harness */
 import { describe, expect, it } from "vitest";
 import {
   buildCvExtractUserContent,

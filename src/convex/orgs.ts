@@ -342,13 +342,17 @@ export const auditTrail = query({
     await requireMembership(ctx, args.organizationId, "org_admin");
     const PAGE = 100;
     const page = Math.max(0, Math.floor(args.page ?? 0));
-    const all = await ctx.db
+    const desc = await ctx.db
       .query("auditLog")
       .withIndex("by_org", (q) => q.eq("organizationId", args.organizationId))
+      // Orden DESC desde la lectura: el índice `by_org` se recorre ASC, así que
+      // take() traía las filas MÁS ANTIGUAS del tenant y la "página 0" no
+      // contenía los eventos recientes (bug encontrado por test, auditoría #3).
+      // Con order("desc") la lectura llega del más nuevo al más viejo y el corte
+      // por página no se solapa ni pierde eventos.
+      .order("desc")
       .take((page + 1) * PAGE);
-    // Página descendente por creación (más reciente primero).
-    const start = Math.max(0, all.length - PAGE);
-    return all.slice(start).reverse().map((e) => ({
+    return desc.slice(page * PAGE, page * PAGE + PAGE).map((e) => ({
       _id: e._id,
       _creationTime: e._creationTime,
       action: e.action,

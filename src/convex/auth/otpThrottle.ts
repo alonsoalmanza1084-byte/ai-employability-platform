@@ -8,7 +8,8 @@
  *
  * Límites aplicados (dos capas, auditoría #3):
  *  1. POR EMAIL: bucket de 5 envíos/hora (LIMITS.otpSendsPerEmailPerHour).
- *  2. GLOBAL: backstop de 200 envíos/hora en toda la plataforma. La API de
+ *  2. GLOBAL: backstop de 200 envíos/hora en toda la plataforma (agregado; corta
+ *     en el envío número 201 de la ventana). La API de
  *     Convex NO expone la IP del cliente en mutations/actions (solo en
  *     httpActions, y las rutas HTTP de auth pertenecen al runtime de Convex
  *     Auth), así que NO es posible aplicar límite por IP real dentro de la
@@ -48,7 +49,7 @@ export async function verifyOtpSendLimit(
   const inWindow = recentGlobal.filter(
     (r: any) => now - r.sentAt < OTP_WINDOW_MS,
   );
-  if (inWindow.length > OTP_GLOBAL_HOURLY_CAP) {
+  if (inWindow.length >= OTP_GLOBAL_HOURLY_CAP) {
     throw new Error("Servicio de códigos saturado. Reintenta en unos minutos.");
   }
 

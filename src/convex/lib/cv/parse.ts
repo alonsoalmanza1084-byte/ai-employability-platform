@@ -40,6 +40,200 @@ export function detectMime(bytes: Uint8Array): CvMime | null {
   return isText ? "txt" : null;
 }
 
+/**
+ * Extrae texto de un PDF con pdf-parse v2 (pdfjs-dist).
+ *
+ * WORKAROUND pdfjs + Convex: al cargar el módulo, pdfjs sondea si el runtime soporta
+ * `structuredClone(valor, { transfer: [valor] })`. El runtime de Convex implementa
+ * `structuredClone` pero NO soporta `transfer`, y ese sondeo escapa como error fatal
+ * ("structuredClone with transfer not supported") que aborta la action.
+ *
+ * Solución: envolvemos temporalmente `globalThis.structuredClone` con una versión que
+ * ignora la opción `transfer` (clon por copia en vez de por transferencia). Con eso pdfjs
+ * detecta "sin transfer" y usa su ruta de copia, que es funcionalmente equivalente.
+ * El patch se hace ANTES del import dinámico porque pdfjs captura la referencia al
+ * cargar el módulo, y se restaura al terminar para no afectar al resto de la action.
+ *
+ * Además pdfjs construye `new DOMMatrix()` al cargarse, lee `navigator` y decide su
+ * estrategia de worker según cómo se stringifica `process` (Convex no tiene DOM ni
+ * Worker), así que también inyectamos shims mínimos mientras dura el parseo. No afecta
+ * a la seguridad: la extracción de texto no ejecuta ni renderiza nada del PDF.
+ */
+async function extractPdfText(bytes: Uint8Array): Promise<string> {
+  /* eslint-disable @typescript-eslint/no-explicit-any -- tipos de pdf-parse v2 heterogéneos */
+  const g = globalThis as any;
+  // El isolate de Convex puede congelar parte de globalThis: cada patch se
+  // aplica y se revierte de forma defensiva (nunca debe abortar la action).
+  const restore = installPdfRuntimeShims(g);
+  try {
+    const mod: any = await import("pdf-parse");
+    const PDFParse = mod.PDFParse as new (o: { data: Uint8Array }) => {
+      getText: () => Promise<{ text: string }>;
+      destroy: () => Promise<void>;
+    };
+    const parser = new PDFParse({ data: bytes });
+    const result = await parser.getText();
+    await parser.destroy();
+    return result?.text ?? "";
+  } catch (err) {
+    throw new Error(
+      `No pudimos procesar el PDF: ${
+        err instanceof Error ? err.message : "formato no reconocido"
+      }`,
+    );
+  } finally {
+    restore();
+  }
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+}
+
+/**
+ * Aplica los shims de entorno que pdfjs necesita para cargar y parsear en el
+ * isolate de Convex. Devuelve una función de reversión idempotente y a prueba
+ * de fallos: si un global no se puede parchear (congelado), se ignora.
+ */
+function installPdfRuntimeShims(g: any): () => void {
+  /* eslint-disable @typescript-eslint/no-explicit-any -- parche de globals */
+  const undo: (() => void)[] = [];
+
+  const patch = (key: string, makeValue: (previous: unknown) => unknown) => {
+    const had = key in g;
+    const previous = g[key];
+    try {
+      g[key] = makeValue(previous);
+      if (had) undo.push(() => { g[key] = previous; });
+      else undo.push(() => { delete g[key]; });
+    } catch {
+      // Global congelado: seguimos sin el shim (el import fallará con un error
+      // claro más abajo, nunca con datos corruptos).
+    }
+  };
+
+  // 1. structuredClone sin `transfer` (pdfjs lo sondea al cargar).
+  if (typeof g.structuredClone === "function") {
+    patch("structuredClone", (prev) => {
+      const clone = prev as (value: any) => any;
+      return (value: any) => clone(value);
+    });
+  }
+
+  // 2. DOMMatrix: pdfjs hace `new DOMMatrix()` a nivel de módulo.
+  patch("DOMMatrix", () => makeDomMatrixShim());
+
+  // 3. navigator: pdfjs lo consulta para detectar el entorno.
+  patch("navigator", () => ({
+    userAgent: "ConvexNode",
+    language: "en-US",
+    languages: ["en-US"],
+    platform: "node",
+    hardwareConcurrency: 1,
+    maxTouchPoints: 0,
+    sendBeacon: () => false,
+  }));
+
+  // 4. process: pdfjs decide su estrategia de worker con
+  //    `process + "" === "[object process]"`. El shim de Convex no se stringify
+  //    así, así que pdfjs cree estar en un navegador e intenta cargar
+  //    pdf.worker.mjs ("No GlobalWorkerOptions.workerSrc specified"). Lo
+  //    exponemos como Node para que use su fake worker en el hilo principal
+  //    (igual que en Node, sin Structured Clone con transfer).
+  patch("process", (prev) => {
+    if (!prev || typeof prev !== "object") return prev;
+    if (`${prev}` === "[object process]") return prev;
+    const target = prev as any;
+    // No sustituimos el objeto: solo definimos toString/Symbol.toPrimitive
+    // (lo que pdfjs usa para detectar Node) y un `versions` vacío si falta.
+    // Reemplazar `globalThis.process` por un Proxy rompe al propio runtime de
+    // Convex, que también lee process.
+    const added: string[] = [];
+    for (const key of [Symbol.toPrimitive, "toString", "versions"]) {
+      if (Object.prototype.hasOwnProperty.call(target, key)) continue;
+      added.push(String(key));
+      try {
+        Object.defineProperty(target, key, {
+          configurable: true,
+          writable: true,
+          value:
+            key === Symbol.toPrimitive
+              ? () => "[object process]"
+              : key === "toString"
+                ? () => "[object process]"
+                : {},
+        });
+      } catch {
+        // Global congelado: seguimos sin el shim.
+      }
+    }
+    return target;
+  });
+
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    for (const fn of undo.reverse()) {
+      try {
+        fn();
+      } catch {
+        // Ignoramos fallos de reversión: no pueden afectar la correctness.
+      }
+    }
+  };
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+}
+
+/** DOMMatrix mínimo (matriz 2D afín). Suficiente para que pdfjs cargue. */
+function makeDomMatrixShim(): unknown {
+  /* eslint-disable @typescript-eslint/no-explicit-any -- constructorduck-typed */
+  return class DomMatrixShim {
+    a = 1;
+    b = 0;
+    c = 0;
+    d = 1;
+    e = 0;
+    f = 0;
+    constructor(init?: any) {
+      if (Array.isArray(init)) {
+        [this.a, this.b, this.c, this.d, this.e, this.f] = init;
+      } else if (init && typeof init === "object") {
+        const src = init as Record<string, unknown>;
+        const self = this as unknown as Record<string, unknown>;
+        for (const k of ["a", "b", "c", "d", "e", "f"]) {
+          if (typeof src[k] === "number") self[k] = src[k];
+        }
+      }
+    }
+    multiplySelf(): this {
+      return this;
+    }
+    translate(): this {
+      return this;
+    }
+    scale(): this {
+      return this;
+    }
+    rotate(): this {
+      return this;
+    }
+    skewX(): this {
+      return this;
+    }
+    skewY(): this {
+      return this;
+    }
+    invertSelf(): this {
+      return this;
+    }
+    preMultiplySelf(): this {
+      return this;
+    }
+    multiply(): this {
+      return this;
+    }
+  };
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+}
+
 /** Extrae texto del archivo. Cada formato por su parser; límites duros. */
 export async function extractText(
   bytes: Uint8Array,
@@ -51,13 +245,7 @@ export async function extractText(
 
   let raw = "";
   if (mime === "pdf") {
-    // pdf-parse v2: exportación variable según build (default o named).
-    const mod: any = await import("pdf-parse");
-    const pdfParse = (mod.default ?? mod.pdf ?? mod) as (b: any) => Promise<{
-      text: string;
-    }>;
-    const result = await pdfParse(Buffer.from(bytes));
-    raw = result?.text ?? "";
+    raw = await extractPdfText(bytes);
   } else if (mime === "docx") {
     const result = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
     raw = result?.value ?? "";

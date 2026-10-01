@@ -445,18 +445,25 @@ describe.skipIf(!CONVEX_URL)("integración de seguridad (deployment real)", () =
     });
   });
 
-  describe("revocación de membresía (auditoría #2)", () => {
-    it("sin endpoint de remojo, la revocación equivalente es la eliminación de la fila; sin membresía → NOT_FOUND en toda la org", async () => {
-      // Gap documentado: NO existe removeMember en V1. La prueba verifica la
-      // INVARIANTE de seguridad que removeMember apalancaría: un usuario sin
-      // fila de membresía no puede leer NADA de la org. Se prueba con un
-      // usuario nunca-miembro contra una org real (equivalente exacto al
-      // estado post-remoción).
-      const { client } = await makeClient();
+  describe("revocación de membresía y audit trail (auditoría #3)", () => {    /** Crea una org con su creador como org_admin y devuelve ids. */
+    async function newOrg(prefix: string) {
+      const { client, userId } = await makeClient();
       const res: any = await client.mutation(anyApi["orgs"]["create"], {
-        name: `Org Revocación ${Date.now()}`,
+        name: `${prefix} ${Date.now()}`,
       });
-      const orgId = String(res.organizationId);
+      return { client, userId, orgId: String(res.organizationId) };
+    }
+
+    /** Devuelve el id del creador de una org (para usarlo como targetUserId). */
+    async function clientUserIdOf(orgId: string, client: ConvexHttpClient) {
+      const members: any[] = await client.query(anyApi["orgs"]["members"], {
+        organizationId: orgId,
+      });
+      return String(members[0].userId);
+    }
+
+    it("un usuario sin fila de membresía no accede a NADA de la org (invariante de revocación)", async () => {
+      const { client, orgId } = await newOrg("Org Revocación");
       const { client: neverMember } = await makeClient();
       await expect(
         neverMember.query(anyApi["jobs"]["listByOrg"], { organizationId: orgId }),
@@ -471,8 +478,127 @@ describe.skipIf(!CONVEX_URL)("integración de seguridad (deployment real)", () =
           ],
         }),
       ).rejects.toThrow(/NOT_FOUND/);
+      // Tampoco los controles administrativos de la auditoría #3.
+      await expect(
+        neverMember.query(anyApi["orgs"]["auditTrail"], { organizationId: orgId }),
+      ).rejects.toThrow(/NOT_FOUND/);
+      await expect(
+        neverMember.mutation(anyApi["orgs"]["revokeInvite"], {
+          organizationId: orgId,
+          invitationId: "invitations\u00000000000000000000000000" as any,
+        }),
+      ).rejects.toThrow();
+      await expect(
+        neverMember.mutation(anyApi["orgs"]["removeMember"], {
+          organizationId: orgId,
+          targetUserId: await clientUserIdOf(orgId, client),
+        }),
+      ).rejects.toThrow(/NOT_FOUND/);
       client.clearAuth();
       neverMember.clearAuth();
+    });
+
+    it("removeMember: NO se puede auto-eliminar ni remover a un no-miembro", async () => {
+      const { client, userId, orgId } = await newOrg("Org RemoveMember");
+      // Auto-eliminación rechazada (evita dejar la org sin admins).
+      await expect(
+        client.mutation(anyApi["orgs"]["removeMember"], {
+          organizationId: orgId,
+          targetUserId: userId,
+        }),
+      ).rejects.toThrow();
+      const { userId: outsiderId, client: outsider } = await makeClient();
+      // Destino que no es miembro de esta org → NOT_FOUND.
+      await expect(
+        client.mutation(anyApi["orgs"]["removeMember"], {
+          organizationId: orgId,
+          targetUserId: outsiderId,
+        }),
+      ).rejects.toThrow(/NOT_FOUND/);
+      // El creador sigue siendo admin tras los intentos fallidos.
+      const members: any[] = await client.query(anyApi["orgs"]["members"], {
+        organizationId: orgId,
+      });
+      expect(members.some((m) => String(m.userId) === userId)).toBe(true);
+      client.clearAuth();
+      outsider.clearAuth();
+    });
+
+    it("auditTrail: el org_admin SÍ lee su trail; un outsider de otra org NO", async () => {
+      const { client, orgId } = await newOrg("Org Trail");
+      // Evento real de auditoría (org.create escribe en auditLog).
+      const own: any[] = await client.query(anyApi["orgs"]["auditTrail"], {
+        organizationId: orgId,
+      });
+      expect(Array.isArray(own)).toBe(true);
+      // Otro org_admin (tenant distinto) no puede leerlo.
+      const other = await newOrg("Org Trail Ajena");
+      await expect(
+        other.client.query(anyApi["orgs"]["auditTrail"], { organizationId: orgId }),
+      ).rejects.toThrow(/NOT_FOUND/);
+      // Y tampoco un usuario que no es miembro de ninguna.
+      const { client: nobody } = await makeClient();
+      await expect(
+        nobody.query(anyApi["orgs"]["auditTrail"], { organizationId: orgId }),
+      ).rejects.toThrow(/NOT_FOUND/);
+      client.clearAuth();
+      other.client.clearAuth();
+      nobody.clearAuth();
+    });
+
+    it("invitaciones vivas: outsider no lista, no revoca y el token tras revocar no sirve", async () => {
+      const { client, orgId } = await newOrg("Org Invite");
+      const inv: any = await client.mutation(anyApi["orgs"]["invite"], {
+        organizationId: orgId,
+        email: `destinatario-${Date.now()}@example.com`,
+        role: "recruiter",
+      });
+      expect(typeof inv.token).toBe("string");
+      expect(inv.token.length).toBeGreaterThanOrEqual(32);
+
+      // El admin ve la invitación pendiente, pero NUNCA el token plano.
+      const pending: any[] = await client.query(anyApi["orgs"]["pendingInvites"], {
+        organizationId: orgId,
+      });
+      expect(pending.length).toBe(1);
+      expect(JSON.stringify(pending)).not.toContain(inv.token);
+      expect(pending[0].tokenHash).toHaveLength(64);
+
+      // Un outsider no puede listar invitaciones de la org.
+      const { client: outsider } = await makeClient();
+      await expect(
+        outsider.query(anyApi["orgs"]["pendingInvites"], { organizationId: orgId }),
+      ).rejects.toThrow(/NOT_FOUND/);
+      await expect(
+        outsider.mutation(anyApi["orgs"]["revokeInvite"], {
+          organizationId: orgId,
+          invitationId: pending[0]._id,
+        }),
+      ).rejects.toThrow(/NOT_FOUND/);
+
+      // El admin revoca → desaparece de pendientes y el token deja de servir.
+      await expect(
+        client.mutation(anyApi["orgs"]["revokeInvite"], {
+          organizationId: orgId,
+          invitationId: pending[0]._id,
+        }),
+      ).resolves.toEqual({ ok: true });
+      const after: any[] = await client.query(anyApi["orgs"]["pendingInvites"], {
+        organizationId: orgId,
+      });
+      expect(after).toHaveLength(0);
+      await expect(
+        outsider.mutation(anyApi["orgs"]["acceptInvite"], { token: inv.token }),
+      ).rejects.toThrow();
+      // Doble revocación → fail-closed.
+      await expect(
+        client.mutation(anyApi["orgs"]["revokeInvite"], {
+          organizationId: orgId,
+          invitationId: pending[0]._id,
+        }),
+      ).rejects.toThrow(/NOT_FOUND/);
+      client.clearAuth();
+      outsider.clearAuth();
     });
   });
 

@@ -87,6 +87,10 @@ describe("superficie pública vs interna (auditoría A-01/A-02)", () => {
       ["orgs.ts", "members", "query"],
       ["orgs.ts", "invite", "mutation"],
       ["orgs.ts", "acceptInvite", "mutation"],
+      ["orgs.ts", "pendingInvites", "query"],
+      ["orgs.ts", "revokeInvite", "mutation"],
+      ["orgs.ts", "removeMember", "mutation"],
+      ["orgs.ts", "auditTrail", "query"],
       ["matches.ts", "getForApplication", "query"],
     ];
     for (const [file, fn, kind] of publicEndpoints) {
@@ -191,7 +195,7 @@ describe("multi-tenancy: toda función pública de org verifica membresía", () 
       ["applications.ts", ["initUpload", "finalizeUpload", "listByJob", "decide", "addNote", "notesFor"]],
       ["jobs.ts", ["listByOrg", "get", "create", "close"]],
       ["matches.ts", ["getForApplication"]],
-      ["orgs.ts", ["members", "invite", "pendingInvites"]],
+      ["orgs.ts", ["members", "invite", "pendingInvites", "revokeInvite", "removeMember", "auditTrail"]],
     ];
     for (const [file, fns] of expectMembership) {
       const code = read(file);
@@ -213,12 +217,31 @@ describe("multi-tenancy: toda función pública de org verifica membresía", () 
   });
 
   it("el audit log no expone mutaciones públicas (solo se escribe server-side)", () => {
-    // Ningún módulo exporta funciones sobre auditLog/securityEvents.
+    // Ningún módulo exporta MUTACIONES sobre auditLog/securityEvents.
+    // Única excepción de LECTURA: orgs.auditTrail, gated a org_admin y paginado
+    // (auditoría #3) — la escritura del trail sigue siendo exclusivamente server-side.
+    const READ_ONLY_ALLOWED = new Set(["orgs.ts:auditTrail"]);
     for (const { file, code } of allConvexSources()) {
       if (file.startsWith("lib")) continue;
-      expect(code, `${file} expone auditLog públicamente`).not.toMatch(/export const \w+ = (mutation|query)\(\{[\s\S]{0,400}?"auditLog"/);
-      expect(code, `${file} expone securityEvents públicamente`).not.toMatch(/export const \w+ = (mutation|query)\(\{[\s\S]{0,400}?"securityEvents"/);
+      const re = /export const (\w+)\s*=\s*(mutation|query|action|internalMutation|internalQuery)\s*\(\{[\s\S]{0,600}?"(auditLog|securityEvents)"/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(code)) !== null) {
+        const key = `${file}:${m[1]}`;
+        if (READ_ONLY_ALLOWED.has(key)) {
+          expect(m[2], `${key} debe ser lectura, nunca escritura`).toBe("query");
+          continue;
+        }
+        throw new Error(`${key} expone la tabla ${m[3]} públicamente (${m[2]})`);
+      }
     }
+  });
+
+  it("la única lectura pública del audit trail exige org_admin y pagina", () => {
+    const orgs = read("orgs.ts");
+    const body = orgs.slice(orgs.indexOf("export const auditTrail"));
+    expect(body).toMatch(/requireMembership\(ctx, args\.organizationId, "org_admin"\)/);
+    // No acepta userId/organizationId libre: el tenant sale de args validado por rol.
+    expect(body).not.toMatch(/args\.userId/);
   });
 });
 
@@ -275,6 +298,9 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
       "orgs.ts:invite": "mutation",
       "orgs.ts:acceptInvite": "mutation",
       "orgs.ts:pendingInvites": "query",
+      "orgs.ts:revokeInvite": "mutation", // auditoría #3: revocación de invitación
+      "orgs.ts:removeMember": "mutation", // auditoría #3: revocación de acceso (control, no feature)
+      "orgs.ts:auditTrail": "query", // auditoría #3: trail de auditoría solo org_admin
       // account (privacidad, auditoría #2)
       "account.ts:deleteAccount": "mutation",
     };
@@ -353,6 +379,62 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
     // El filtro se aplica dentro de verifyExtractionAgainstSource (ambos mods)
     expect(ev).toMatch(/education\.filter/);
     expect(ev).toMatch(/certifications\.filter/);
+  });
+
+  it("el parser de PDF neutraliza el sondeo de structuredClone con transfer (Convex)", () => {
+    const parse = read("lib/cv/parse.ts");
+    // pdfjs sondea structuredClone(x, {transfer}) al cargar y Convex no lo soporta:
+    // debe envolver structuredClone ANTES del import dinámico y restaurarla después.
+    expect(parse).toMatch(/g\.structuredClone\s*=/);
+    expect(parse).toMatch(/await import\("pdf-parse"\)/);
+    const patchAt = parse.indexOf("g.structuredClone =");
+    const importAt = parse.indexOf('await import("pdf-parse")');
+    const restoreAt = parse.indexOf("g.structuredClone = original");
+    expect(patchAt).toBeGreaterThan(-1);
+    expect(patchAt, "el parche debe aplicarse antes del import de pdfjs").toBeLessThan(importAt);
+    expect(restoreAt, "structuredClone debe restaurarse en el finally").toBeGreaterThan(importAt);
+    expect(parse).toMatch(/finally\s*\{/);
+  });
+
+  it("los endpoints de control de la auditoría #3 exigen rol org_admin", () => {
+    const orgs = read("orgs.ts");
+    for (const fn of ["revokeInvite", "removeMember", "auditTrail"]) {
+      const body = orgs.slice(orgs.indexOf(`export const ${fn}`));
+      const next = body.indexOf("export const", 20);
+      const scope = next === -1 ? body : body.slice(0, next);
+      expect(scope, `${fn} debe exigir org_admin`).toContain('requireMembership');
+      expect(scope, `${fn} debe exigir org_admin`).toMatch(/requireMembership\([\s\S]*?"org_admin"/);
+    }
+  });
+
+  it("removeMember se niega a auto-borrarse y a remover a otro org_admin", () => {
+    const orgs = read("orgs.ts");
+    const body = orgs.slice(orgs.indexOf("export const removeMember"));
+    expect(body).toMatch(/targetUserId === actorId/);
+    expect(body).toMatch(/membership\.role === "org_admin"/);
+    expect(body).toMatch(/ctx\.db\.delete\(membership\._id\)/);
+  });
+
+  it("auditTrail devuelve solo campos no sensibles y pagina la lectura", () => {
+    const orgs = read("orgs.ts");
+    const body = orgs.slice(orgs.indexOf("export const auditTrail"));
+    expect(body).toMatch(/\.take\(\(page \+ 1\) \* PAGE\)/);
+    // Orden descendente ANTES del corte: sin order("desc") el índice por_org
+    // se recorre asc y take() devuelve los eventos MÁS ANTIGUOS (bugFixed).
+    expect(body).toMatch(/\.order\("desc"\)\s*\n\s*\.take\(/);
+    expect(body).toMatch(/desc\.slice\(page \* PAGE, page \* PAGE \+ PAGE\)/);
+    // No debe filtrar contenido de CV ni emails.
+    expect(body).not.toMatch(/extractedText|fullName|decisionNote/);
+    for (const f of ["action", "targetType", "targetId", "actorUserId", "metadata"]) {
+      expect(body).toContain(`${f}: e.${f}`);
+    }
+  });
+
+  it("revokeInvite deja la invitación inutilizable (acceptInvite solo acepta pending)", () => {
+    const orgs = read("orgs.ts");
+    expect(orgs).toMatch(/status:\s*"revoked"/);
+    expect(orgs).toMatch(/action:\s*"org\.invite\.revoke"/);
+    expect(orgs).toMatch(/invitation\.status !== "pending"/);
   });
 
   it("deleteAccount borra binarios de storage y sesiones (retención)", () => {

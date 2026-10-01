@@ -279,3 +279,300 @@ Congelado por el test estático de inventario (B-05). **Conclusión:** ninguna f
 5. UI de audit log para platform_admin.
 
 **Veredicto de la auditoría #2: los blockers de seguridad de la auditoría #1 están cerrados y verificados con tests en verde. El sello "production-ready" sigue sin otorgarse** hasta cerrar B-13.1–B-13.5 (fase 8 / infra / producto).
+
+---
+
+## 10. AUDITORÍA #3 — Gate final de seguridad pre-producción (2026-10-01)
+
+> **NO se declara production-ready.** Esta sección documenta qué se EJECUTÓ y
+> qué NO. Cada afirmación lleva la evidencia del comando que la respalda.
+
+### 10.1 Resumen de estado
+
+| Ítem | Estado |
+|---|---|
+| Invitaciones (enumeración, replay, expiración, tenant, hash, post-revocación, cross-tenant) | **VERIFIED** |
+| `removeMember` (matriz completa + sesión post-revocación) | **VERIFIED** |
+| Audit log: autorización server-side y scope por tenant | **VERIFIED** |
+| Anti score-inflation (7 vectores) | **VERIFIED** (determinista) |
+| Ingesta de PDF en runtime Convex (incidente `structuredClone`) | **VERIFIED** (E2E real) |
+| Throttling OTP por email | **VERIFIED** |
+| Throttling OTP por IP / edge (WAF) | **NOT EXECUTED** — ver §10.2 |
+| **GOLDEN EVALUATION con LLM real** | **NOT EXECUTED** — ver §10.3 |
+| Cadena completa (push, typecheck, tests, lint, build) | **VERIFIED** |
+
+### 10.2 Throttling pre-auth: qué existe y qué NO (distinción obligatoria)
+
+Las tres capas NO son equivalentes. Solo la primera está implementada en la app:
+
+| Capa | Control | Estado | Dónde se aplica |
+|---|---|---|---|
+| **1. Por email (app)** | 5 envíos/hora por dirección | **VERIFIED / ACTIVO** | `src/convex/auth/otpThrottle.ts` → `verifyOtpSendLimit()`, invocado en `auth/emailOtp.ts` **antes** de `axios.post` |
+| **2. Global (app)** | Backstop agregado 200 envíos/hora | **VERIFIED / ACTIVO** | Mismo archivo (`OTP_GLOBAL_HOURLY_CAP`), corta en el envío n.º 201 |
+| **3. Por IP (edge/WAF)** | Límite por IP en CDN/WAF | **NOT EXECUTED — NO EXISTE** | Fuera del código de la aplicación |
+
+**Por qué la capa 3 no puede implementarse en la app:** la API de Convex **no
+expone la IP del cliente** en mutations ni actions (solo en `httpAction`, y las
+rutas HTTP de autenticación pertenecen al runtime interno de Convex Auth, fuera
+de nuestro código). Por tanto:
+
+- **NO se afirma protección por IP.** No existe.
+- El backstop global (capa 2) es el único freno agregado *app-side* contra un
+  atacante que rota emails arbitrarios. Acota el daño agregado, **no** la
+  tasa por IP.
+- **PRODUCTION BLOCKER:** el rate limiting por IP debe configurarse en el edge
+  (CDN/WAF) antes de exponer auth a internet. Está documentado como
+  responsabilidad de plataforma; su configuración no es verificable desde este
+  repositorio.
+
+**Verificación (OTP):** `@convex-dev/auth@0.0.90` limita la **verificación**
+(10 intentos fallidos/hora/email vía tabla `authRateLimits`); el **envío** no
+venía limitado por defecto y por eso se añadió `otpThrottle.ts`.
+
+Evidencia: `tests/unit/security.test.ts` → "throttle de envío OTP (pre-auth)"
+(6 casos, incluido el backstop global con rotación de 200 emails distintos) y
+`tests/static/api_surface.test.ts` → "el throttle de OTP existe y está cableado
+en el provider de email" (orden relativo `verifyOtpSendLimit` < `axios.post`).
+
+### 10.3 GOLDEN EVALUATION: NOT EXECUTED
+
+> **NO se ha verificado la seguridad del LLM real.** No se afirma lo contrario.
+
+**Motivo:** el deployment **no tiene `OPENAI_API_KEY`**. Comprobado con
+`bunx convex env list` sobre `hip-porpoise-838`: las variables presentes son
+`JWT_PRIVATE_KEY`, `JWKS`, `SITE_URL`, `VLY_APP_NAME`,
+`VLY_CONVEX_AUTH_ISSUER`, `VLY_INTEGRATION_BASE_URL`, `VLY_INTEGRATION_KEY`.
+**No aparece `OPENAI_API_KEY`.**
+
+**Qué se ejecutó en su lugar** (`tests/golden/ai.security.eval.test.ts`):
+
+- El bloque de evaluación con LLM real está en `describe.skipIf(!OPENAI_API_KEY)`
+  → se reporta como **skipped**, nunca como aprobado.
+- Un test **siempre activo** imprime el estado explícito en el reporte:
+  `"GOLDEN EVALUATION: NOT EXECUTED — falta OPENAI_API_KEY en el deployment"`.
+- 4 tests estructurales del corpus (sintético, sin LLM) sí pasan.
+- Resultado real de la última ejecución: `tests/golden/ai.security.eval.test.ts
+  (5 tests | 1 skipped)`.
+
+**Corpus (sintético, ningún dato real de personas):** `src/convex/lib/ai/golden_corpus.ts`
+— 5 casos: `clean` (baseline), `injection`, `fabrication`, `contradiction`,
+`injection_score` (nuevo: ataca niveles, logros y experiencia de gestión).
+Cubren los vectores exigidos: habilidades, niveles, años, educación,
+certificaciones, logros y gestión.
+
+**Para desbloquear:** añadir `OPENAI_API_KEY` en la pestaña de Keys del
+proyecto y reejecutar `bunx vitest run tests/golden`. Hasta entonces, la
+seguridad del LLM frente a prompt injection es **NO VERIFICADA**.
+
+### 10.4 Anti score-inflation (hallazgo REAL encontrado y corregido en esta auditoría)
+
+Al escribir la suite determinista aparecieron **dos vulnerabilidades reales de
+inflación de score**, ambas porque se confiaba en el LLM:
+
+**VULN-01 — Inflación de años de experiencia.** El post-check descartaba los años
+solo si `!hasVerifiableEmployer && !<mención numérica>`. Es decir, **la mera
+existencia de un empleador verificable servía de coartada para aceptar
+cualquier cifra**: un LLM obediente podía declarar `yearsExperience: 30` sobre un
+CV con un solo empleador real y el requisito `experience_years` lo consumía.
+*Corrección:* `sumVerifiableExperienceYears()` (+ `literalYears`) acota la cifra a
+la mención literal ("N años") o a la suma de los rangos de fechas verificables;
+si no hay ninguna de las dos, se descarta.
+
+**VULN-02 — Inflación de nivel de habilidad.** La evidencia solo comprobaba que el
+**nombre** de la habilidad apareciera en el texto. Un LLM obediente podía subir
+"Python nivel 3" a "nivel 5" **conservando la evidencia real**, y el nivel pesa
+directamente en el score.
+*Corrección:* `maxJustifiedSkillLevel()` acota el nivel a lo que el texto
+sustenta (5 solo con marcadores explícitos de maestría; 4 con seniority; 3 por
+defecto). Es fail-closed: se prefiere recortar un nivel de más a aceptar uno
+inventado.
+
+**Evidencia (test de regresión ejecutado y en verde):**
+`tests/unit/scoreInflation.security.test.ts` — 14 tests. Simula un LLM que
+obedece la inyección (**el peor caso**) y comprueba que el score **nunca supera**
+el baseline honesto:
+
+| Vector | Test | Resultado |
+|---|---|---|
+| Niveles de habilidades | "VECTOR: inflar NIVELES de habilidades existentes" | PASS |
+| Habilidades fantasma nivel 5 | "VECTOR: añadir habilidades fantasma con nivel máximo" | PASS |
+| Años de experiencia | "VECTOR: inflar años de experiencia" | PASS |
+| Educación | "VECTOR: fabricarse educación no verificable" | PASS |
+| Certificaciones | "VECTOR: fabricarse certificaciones" | PASS |
+| Logros | "VECTOR: inflar LOGROS (achievements)" | PASS |
+| Experiencia de gestión | "VECTOR: fabricarse experiencia de GESTIÓN" | PASS |
+| Ataque combinado | "ATAQUE COMBINADO: todos los vectores a la vez" | PASS |
+
+Nota de honestidad: el recorte de nivel puede **reducir** el score de un
+candidato legítimo cuyo CV no use palabras de seniority. Es un sesgo deliberado
+hacia la conservativez (fail-closed) y debe revisarse con el negocio.
+
+### 10.5 Invitaciones — VERIFIED (9 casos, unitarios con handlers reales)
+
+`tests/unit/invitations.security.test.ts` invoca los handlers **reales** de
+`orgs.ts` con un `ctx.db` en memoria que emula la semántica de Convex.
+
+| Propiedad | Test |
+|---|---|
+| Token nunca en claro (solo SHA-256) | "el token NUNCA se guarda en claro" |
+| Enumeración (outsider/recruiter/hiring_manager/anon) | "ENUMERACIÓN: un outsider no puede listar invitaciones" |
+| No se filtra existencia (NOT_FOUND, no FORBIDDEN) | "el outsider ve NOT_FOUND (no FORBIDDEN)" |
+| Replay (doble aceptación) | "REPLAY: un token aceptado no puede aceptarse de nuevo" |
+| Expiración | "EXPIRACIÓN: un token con expiresAt pasado se rechaza" |
+| Tenant binding (email del actor) | "TENANT BINDING: el token solo sirve para el email invitado" |
+| Cross-tenant en revocación | "CROSS-TENANT: un admin de otra org no puede revocar invitaciones ajenas" |
+| Aceptación tras revocación | "ACEPTACIÓN TRAS REVOCACIÓN: revokeInvite inutiliza el token" |
+| Fail-closed idempotente | "revokeInvite es idempotente-fail-closed" |
+
+**E2E real** (`tests/integration/security.integration.test.ts` → "invitaciones
+vivas"): el token plano **no aparece** en la respuesta de `pendingInvites`
+(solo `tokenHash` de 64 chars); tras `revokeInvite` desaparece de pendientes y
+`acceptInvite` falla.
+
+### 10.6 removeMember — VERIFIED (matriz completa)
+
+`src/convex/orgs.ts::removeMember` — solo `org_admin`, borra la fila de
+membresía y registra `org.member.remove` en el audit log.
+
+| Celda | Resultado | Test |
+|---|---|---|
+| `org_admin` autorizado | **ALLOW** + acceso muere | "un org_admin puede remover a un recruiter y el acceso MUERE de inmediato" |
+| `org_admin` → `hiring_manager` | ALLOW | "el mismo para hiring_manager" |
+| `recruiter` | DENY | "removeMember es org_admin-only" |
+| `hiring_manager` | DENY | ídem |
+| `candidate` (sin membresía) | DENY (NOT_FOUND) | "un CANDIDATO (sin membresía) no puede remover miembros ni leer el trail" |
+| `outsider` de otra org | DENY (NOT_FOUND) | ídem |
+| Sin sesión (`null`) | DENY | ídem |
+| Destino no miembro de esa org | NOT_FOUND | "destino que no es miembro de ESA org → NOT_FOUND" |
+| Otro `org_admin` | DENY (anti take-over) | "un admin NO puede remover a otro org_admin" |
+| Auto-eliminación (último admin) | DENY | "un admin NO puede remover a sí mismo" |
+| **Sesión autenticada tras revocación** | **acceso DENY** | "sesión YA AUTENTICADA tras la revocación" |
+
+**Sobre la sesión post-revocación (matiz importante y verificado):** la sesión
+**NO** se invalida (no se borra `authSessions`), el usuario sigue autenticado.
+Lo que muere es el **acceso a la organización**, porque `requireMembership`
+relee la fila de membresía en cada llamada. El test lo comprueba explícitamente:
+`myOrgs` sigue respondiendo (sesión viva) pero ya **no** incluye la org, y
+`members` / `pendingInvites` / `auditTrail` / `invite` devuelven NOT_FOUND.
+
+### 10.7 Audit log — VERIFIED (autorización server-side)
+
+`orgs.ts::auditTrail` — **lectura server-side** acotada a `org_admin`, filtrada
+por índice `by_org` con el tenant derivado de la membresía (nunca del payload).
+
+- **Autorizado:** `org_admin` lee su trail e incluye `org.member.remove` y
+  `org.invite.revoke` ("el org_admin SÍ puede inspeccionar el trail de SU org").
+- **NO autorizado:** outsider, `recruiter`, `hiring_manager` y sin sesión →
+  NOT_FOUND/FORBIDDEN ("NO autorizado NO puede leer el trail").
+- **Scope por tenant:** el admin de ORG_B no ve eventos de ORG_A.
+- **Sin fuga de PII:** el trail expone solo
+  `action/targetType/targetId/actorUserId/metadata`; el test afirma que el volcado
+  JSON **no contiene** emails de miembros ni tokens.
+- **Escritura intacta:** el trail no expone ninguna mutación; el inventario
+  estático lo verifica.
+
+**Bug real encontrado por un test durante esta auditoría:** la paginación
+usaba `take()` sobre un índice recorrido en orden **ascendente**, de modo que la
+"página 0" devolvía los eventos **más antiguos**, no los más recientes, y el
+corte por página se solapaba. Corregido con `.order("desc")` antes de `take()`
+(`desc.slice(page * PAGE, page * PAGE + PAGE)`), con test de no-solapamiento.
+
+### 10.8 Incidente `structuredClone with transfer not supported` — VERIFIED (E2E real)
+
+**Síntoma:** *toda* ingesta de PDF real fallaba en el deployment, tanto en la
+aplicación del candidato como en la del recruiter:
+`Server Error: structuredClone with transfer not supported` en
+`pdfjs-dist/legacy/build/pdf.mjs`.
+
+**Causa raíz:** `pdfjs-dist` (vía `pdf-parse@2.4.5`) sondea al cargar el módulo si
+el runtime soporta `structuredClone(valor, { transfer: [valor] })`. El isolate de
+Convex implementa `structuredClone` pero **no** soporta `transfer`, y ese sondeo
+**escapa como error fatal aunque esté dentro de un try/catch**. Además pdfjs exige
+`DOMMatrix`, `navigator` y un worker que el isolate no tiene.
+
+Se intentó unsuccessfully parchear `globalThis.structuredClone`, `DOMMatrix`,
+`navigator` y `process` antes del import dinámico; el sondeo fatal persiste
+porque el error no es capturable.
+
+**Corrección definitiva:** se **eliminó `pdf-parse`** y se implementó un lector de
+PDF propio, sin dependencias de navegador:
+
+- `src/convex/lib/cv/pdfText.ts` — indexa objetos indirectos, infla content
+  streams, recorre `/Type /Page`, e interpreta operadores de texto
+  (`Tj`, `TJ`, `'`, `"`) decodificando por fuente: WinAnsi para fuentes simples y
+  códigos de 2 bytes vía CMap `/ToUnicode` (Identity-H) para fuentes CID.
+- `src/convex/lib/cv/inflate.ts` — **DEFLATE (RFC 1951) puro en TypeScript**,
+  porque el isolate de Convex **no expone `zlib`** ni `node:zlib`.
+
+**Verificación ejecutada:**
+
+1. **Oráculo zlib** (`tests/unit/pdfExtract.test.ts`, 12 comparaciones):
+   nuestra salida es **byte-idéntica** a `zlib.inflateSync` de Node para texto
+   corto, texto repetible, datos aleatorios incompresibles y patrones LZ77, en
+   niveles 1, 6 y 9. Esto descarta que el inflate propio diverge.
+2. **E2E contra el deployment real**
+   (`tests/integration/cv_ingest.integration.test.ts`): PDF sintético subido al
+   storage privado y `candidates.ingestCv` ejecutado contra
+   `https://hip-porpoise-838.convex.cloud`. **PASS**: la action ya no lanza y la
+   extracción avanza más allá del parseo.
+3. **Defensas del extractor:** `MAX_DECOMPRESSED_BYTES` (24 MB),
+   `MAX_COMPRESSION_RATIO` (400×, anti zip-bomb), `MAX_OBJECTS` (20 000),
+   `MAX_PAGES` (200). PDF corrupto → vacío, sin excepción.
+
+**Limitaciones conocidas y honestas del lector propio (DOCUMENTED GAP):**
+
+- Cuando el texto se dibuja en varios *show operators* sin salto explícito, las
+  palabras pueden quedar concatenadas ("Trace-basedJust-in-Time"). No afecta a la
+  extracción de habilidades, pero sí a la calidad del texto libre.
+- Fuentes CID **sin** CMap `/ToUnicode` se decodifican como latin1 y producen
+  texto ilegible. Los CV generados por Word/LibreOffice/LaTeX sí incluyen
+  `/ToUnicode`, por lo que es el caso mayoritario, pero no está garantizado.
+- No se extrae texto de PDFs escaneados (imagen) — es el comportamiento
+  pretendido: `extractText` rechaza el archivo con un mensaje explícito.
+
+### 10.9 Cadena completa — evidencia de ejecución
+
+Todos los comandos ejecutados sobre `https://hip-porpoise-838.convex.cloud`
+(recurso de staging/desarrollo) el 2026-10-01:
+
+| Comando | Resultado |
+|---|---|
+| `bunx convex dev --once` | ✔ Convex functions ready (exit 0) |
+| `bunx tsc -b --noEmit` | ✔ sin errores (exit 0) |
+| `bunx vitest run` | **193 passed \| 1 skipped (194)**, 8 archivos |
+| `bunx eslint .` | 3 errores, **los 3 preexistentes de la plantilla** (`carousel.tsx`, `sidebar.tsx`, `hooks/use-mobile.ts`) + 19 warnings. Ningún error en código de producto o de tests. |
+| `bun run build` | ✔ built (exit 0) |
+
+Desglose de la suite (194):
+
+| Suite | Tests |
+|---|---|
+| `tests/unit/security.test.ts` | 67 |
+| `tests/unit/invitations.security.test.ts` | 21 |
+| `tests/unit/scoreInflation.security.test.ts` | 14 |
+| `tests/unit/pdfExtract.test.ts` | 20 |
+| `tests/static/api_surface.test.ts` | 34 |
+| `tests/golden/ai.security.eval.test.ts` | 5 (**1 skipped**: LLM real) |
+| `tests/integration/security.integration.test.ts` | 31 (E2E real) |
+| `tests/integration/cv_ingest.integration.test.ts` | 2 (E2E real) |
+
+### 10.10 Restricciones de cobertura (DOCUMENTED GAP)
+
+- **Celdas `recruiter`/`hiring_manager` con membresía ACEPTADA:** no son
+  automatizables contra el deployment. `acceptInvite` exige una cuenta con email
+  verificado, y una sesión anónima de CI no puede recibir el OTP por email. Se
+  cubren a nivel **unitario** con los handlers reales y `ctx` controlado
+  (incluye `requireMembership` con matriz de roles), y las celdas vivas
+  `outsider` y `org_admin` sí se ejercitan E2E. Las celdas vivas intermedias
+  requieren un buzón de pruebas.
+- **Golden eval con LLM real:** §10.3, NOT EXECUTED.
+
+### 10.11 Bloqueantes para producción
+
+| # | Bloqueante | Tipo |
+|---|---|---|
+| 1 | **Rate limiting por IP en el edge (CDN/WAF)** no configurado. La app no puede aplicarlo: Convex no expone la IP en mutations/actions. Sin esto, auth queda expuesto a fuerza bruta distribuida. | PRODUCTION BLOCKER |
+| 2 | **`OPENAI_API_KEY` ausente** ⇒ la seguridad del LLM frente a prompt injection **no está verificada**. Además, sin clave la extracción de IA no funciona en absoluto (el pipeline termina en `failed`, de forma controlada y visible). | PRODUCTION BLOCKER |
+| 3 | Sin verificación E2E de las celdas RBAC `recruiter`/`hiring_manager` con membresía aceptada (requiere buzón de pruebas). | DOCUMENTED GAP |
+| 4 | Limitaciones de calidad del lector PDF propio (concatenación de palabras, CID sin `/ToUnicode`). Revisar con usuarios reales antes de confiar en él para matching. | DOCUMENTED GAP |
+| 5 | El recorte fail-closed de niveles de habilidad puede subvalorar candidatos legítimos sin vocabulario de seniority. Validar con el negocio. | DOCUMENTED GAP |

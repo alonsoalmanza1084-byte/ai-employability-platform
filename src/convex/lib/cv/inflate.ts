@@ -46,8 +46,11 @@ class BitReader {
   private pos = 0;
   private bitBuf = 0;
   private bitCnt = 0;
+  private readonly src: Uint8Array;
 
-  constructor(private readonly src: Uint8Array) {}
+  constructor(src: Uint8Array) {
+    this.src = src;
+  }
 
   /** Bits del stream, least-significant-first. */
   bits(need: number): number {

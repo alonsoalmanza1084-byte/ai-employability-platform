@@ -381,21 +381,6 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
     expect(ev).toMatch(/certifications\.filter/);
   });
 
-  it("el parser de PDF neutraliza el sondeo de structuredClone con transfer (Convex)", () => {
-    const parse = read("lib/cv/parse.ts");
-    // pdfjs sondea structuredClone(x, {transfer}) al cargar y Convex no lo soporta:
-    // debe envolver structuredClone ANTES del import dinámico y restaurarla después.
-    expect(parse).toMatch(/g\.structuredClone\s*=/);
-    expect(parse).toMatch(/await import\("pdf-parse"\)/);
-    const patchAt = parse.indexOf("g.structuredClone =");
-    const importAt = parse.indexOf('await import("pdf-parse")');
-    const restoreAt = parse.indexOf("g.structuredClone = original");
-    expect(patchAt).toBeGreaterThan(-1);
-    expect(patchAt, "el parche debe aplicarse antes del import de pdfjs").toBeLessThan(importAt);
-    expect(restoreAt, "structuredClone debe restaurarse en el finally").toBeGreaterThan(importAt);
-    expect(parse).toMatch(/finally\s*\{/);
-  });
-
   it("los endpoints de control de la auditoría #3 exigen rol org_admin", () => {
     const orgs = read("orgs.ts");
     for (const fn of ["revokeInvite", "removeMember", "auditTrail"]) {
@@ -435,6 +420,44 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
     expect(orgs).toMatch(/status:\s*"revoked"/);
     expect(orgs).toMatch(/action:\s*"org\.invite\.revoke"/);
     expect(orgs).toMatch(/invitation\.status !== "pending"/);
+  });
+
+  it("evidence post-check ACOTA los años de experiencia (no los basta un empleador)", () => {
+    const ev = read("lib/ai/evidence.ts");
+    // El bug: "existe un empleador verificable" se usaba como coartada para
+    // aceptar años inflados. Ahora el número se acota a la mención literal o a
+    // la suma de rangos de fechas verificables.
+    expect(ev).toMatch(/sumVerifiableExperienceYears/);
+    expect(ev).toMatch(/literalYears/);
+    expect(ev).not.toMatch(/!hasVerifiableEmployer &&/);
+  });
+
+  it("evidence post-check ACOTA el nivel de habilidad a lo que sustenta el texto", () => {
+    const ev = read("lib/ai/evidence.ts");
+    expect(ev).toMatch(/maxJustifiedSkillLevel/);
+    expect(ev).toMatch(/inflatedSkillLevels/);
+    // El techo debe aplicarse a TODA habilidad, no solo a las fantasma.
+    expect(ev).toMatch(/if \(level > justifiedLevel\)/);
+  });
+
+  it("el PDF ya NO depende de pdfjs/pdf-parse (incompatible con el isolate)", () => {
+    const parse = read("lib/cv/parse.ts");
+    // pdf-parse/pdfjs ya no deben aparecer NINGÚNWhere en el flujo de parsing.
+    // (No usamos un patrón laxo tipo `from "pdf` porque chocaría con el módulo
+    // propio "./pdfText".)
+    // Ignoramos comentarios: el archivo DOCUMENTA por qué ya no se usa pdfjs.
+    const parseCode = stripComments(parse);
+    expect(parseCode).not.toMatch(/pdf-parse|pdfjs/);
+    expect(parseCode).not.toMatch(/require\(["']pdf/);
+    expect(parseCode).not.toMatch(/import\(["']pdf/);
+    expect(parse).toMatch(/extractPdf/);
+    // El extractor propio debe tener techos anti zip-bomb.
+    const pdf = read("lib/cv/pdfText.ts");
+    expect(pdf).toMatch(/MAX_DECOMPRESSED_BYTES/);
+    expect(pdf).toMatch(/MAX_COMPRESSION_RATIO/);
+    expect(pdf).toMatch(/MAX_OBJECTS|MAX_PAGES/);
+    // Y el inflate puro (Convex no expone zlib).
+    expect(read("lib/cv/inflate.ts")).toMatch(/inflate/);
   });
 
   it("deleteAccount borra binarios de storage y sesiones (retención)", () => {

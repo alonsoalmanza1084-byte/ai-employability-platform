@@ -57,10 +57,76 @@ export interface EvidenceCheckResult {
   filteredEducation: number;
   filteredCertifications: number;
   filteredYearsExperience: boolean;
+  /** Niveles de habilidad recortados por no estar sustentados en el texto. */
+  inflatedSkillLevels: number;
 }
 
 const capAt = (current: number | undefined, cap: number): number =>
   current === undefined ? cap : Math.min(current, cap);
+
+/**
+ * Suma de años supported por las experiencias DECLARADAS y verificables.
+ *
+ * Solo cuenta entradas cuya empresa o puesto aparece en el texto, y cuyo rango
+ * de fechas se puede leer como años. Es el techo que puede justificar la cifra
+ * de `yearsExperience`: un rango 2021-2024 son 3 años, no 30.
+ */
+function sumVerifiableExperienceYears(
+  experience: readonly {
+    company?: string;
+    title?: string;
+    start?: string;
+    end?: string;
+  }[],
+  textTokens: Set<string>,
+  normalizedText: string,
+): number {
+  const YEAR = /\b(19|20)\d{2}\b/g;
+  let total = 0;
+  for (const x of experience) {
+    const verifiable =
+      (x.company !== undefined && appearsIn(x.company, textTokens, normalizedText)) ||
+      (x.title !== undefined && appearsIn(x.title, textTokens, normalizedText));
+    if (!verifiable) continue;
+    const from = x.start?.match(YEAR);
+    const to = x.end?.match(YEAR);
+    if (!from || !to) continue;
+    const y0 = Number(from[0]);
+    const y1 = Number(to[0]);
+    if (Number.isNaN(y0) || Number.isNaN(y1) || y1 < y0) continue;
+    // Techo por entrada (40 años) contra rangos absurdos.
+    total += Math.min(y1 - y0, 40);
+  }
+  return total;
+}
+
+/**
+ * Techo de NIVEL de habilidad que el documento puede sostener.
+ *
+ * Bug real (auditoría #3): la evidencia solo comprobaba que el NOMBRE de la
+ * habilidad apareciera en el texto, así que un LLM obediente podía subir
+ * "Python nivel 3" a "nivel 5" conservando la evidencia real y subiendo el
+ * score. Ahora el nivel se acota a lo que el texto sustenta:
+ *   - 5 (experto): solo con marcadores explícitos de maestría.
+ *   - 4 (avanzado): con marcadores de seniority.
+ *   - 3: por defecto (no se inventa proficiency superior).
+ *
+ * Decisión fail-closed: preferimos recortar un nivel de más a aceptar un nivel
+ * inventado.
+ */
+function maxJustifiedSkillLevel(text: string): 1 | 2 | 3 | 4 | 5 {
+  if (
+    /\b(expert[oa]s?|especialista\s+(sr\.?|senior)|arquitect[oa]s?|architect|principal)\b/i.test(
+      text,
+    )
+  ) {
+    return 5;
+  }
+  if (/\b(senior|sr\.?|semi\s*sr|lead|avanzad[oa]|advanced)\b/i.test(text)) {
+    return 4;
+  }
+  return 3;
+}
 
 export function verifyExtractionAgainstSource(
   text: string,
@@ -73,11 +139,20 @@ export function verifyExtractionAgainstSource(
   let filteredEducation = 0;
   let filteredCertifications = 0;
   let filteredYearsExperience = false;
+  let inflatedSkillLevels = 0;
 
+  const justifiedLevel = maxJustifiedSkillLevel(text);
   const skills = extraction.skills.map((s) => {
     let evidence = s.evidence;
     let confidence = s.confidence;
     let level = s.level;
+    // Anti score-inflation: el nivel declarado por el LLM se acota a lo que el
+    // TEXTO sustenta. Sin marcadores de seniority/experiencia, 5 y 4 no son
+    // justificables aunque la evidencia de la habilidad sea real.
+    if (level > justifiedLevel) {
+      level = justifiedLevel;
+      inflatedSkillLevels++;
+    }
     if (evidence !== undefined) {
       if (!appearsIn(evidence, textTokens, normalizedText)) {
         evidence = undefined;
@@ -144,16 +219,42 @@ export function verifyExtractionAgainstSource(
       appearsIn(x.title, textTokens, normalizedText),
   );
   let yearsExperience = extraction.yearsExperience;
-  if (
-    yearsExperience !== undefined &&
-    yearsExperience > 0 &&
-    !hasVerifiableEmployer &&
-    !/\b\d+\s*(años|anos|years)\b/i.test(text)
-  ) {
-    // No hay empleador verificable ni mención numérica en el texto: el dato
-    // no puede proceder del documento → se descarta (anti score-inflation).
-    yearsExperience = undefined;
-    filteredYearsExperience = true;
+  if (yearsExperience !== undefined && yearsExperience > 0) {
+    // AÑO POR AÑO: un empleador verificable NO acredita el NÚMERO de años.
+    // Bug real (auditoría #3): "hay un empleador en el CV" se usaba como
+    // coartada para aceptar "30 años" inyectados. Ahora el número se acota a
+    // lo que el propio documento soporta:
+    //  1. Si el CV menciona literalmente "N años" → ese N es el dato.
+    //  2. Si no, se acota a la suma de los rangos de fechas declarados.
+    //  3. Si no hay ninguna de las dos cosas → se descarta.
+    const literalYears = text.match(/\b(\d{1,2})\s*(?:años|anos|years)\b/i);
+    if (literalYears) {
+      const stated = Number(literalYears[1]);
+      if (Number.isFinite(stated) && stated < yearsExperience) {
+        yearsExperience = stated;
+        filteredYearsExperience = true;
+      }
+    } else {
+      const span = sumVerifiableExperienceYears(
+        extraction.experience,
+        textTokens,
+        normalizedText,
+      );
+      if (span > 0) {
+        if (yearsExperience > span) {
+          yearsExperience = span;
+          filteredYearsExperience = true;
+        }
+      } else if (!hasVerifiableEmployer) {
+        yearsExperience = undefined;
+        filteredYearsExperience = true;
+      } else {
+        // Hay empleador verificable pero ninguna fecha utilizable: no podemos
+        // sostener una cifra, así que no se inventa ninguna.
+        yearsExperience = undefined;
+        filteredYearsExperience = true;
+      }
+    }
   }
 
   return {
@@ -170,5 +271,6 @@ export function verifyExtractionAgainstSource(
     filteredEducation,
     filteredCertifications,
     filteredYearsExperience,
+    inflatedSkillLevels,
   };
 }

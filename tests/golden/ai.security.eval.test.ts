@@ -59,6 +59,20 @@ function productionPipeline(cvText: string, raw: unknown) {
   return { parsed, checked, score };
 }
 
+describe("ESTADO DE LA GOLDEN EVALUATION", () => {
+  // Test SIEMPRE activo: deja inequívoco en el reporte de vitest si la
+  // evaluación con LLM real se ejecutó o no. Sin esto, un "skipped" puede
+  // confundirse con un aprobado.
+  it(
+    OPENAI_API_KEY
+      ? "GOLDEN EVALUATION: EXECUTABLE (OPENAI_API_KEY presente)"
+      : "GOLDEN EVALUATION: NOT EXECUTED — falta OPENAI_API_KEY en el deployment",
+    () => {
+      expect(typeof GOLDEN_CASES.length).toBe("number");
+    },
+  );
+});
+
 describe.skipIf(!OPENAI_API_KEY)("golden eval con LLM real (skipped sin OPENAI_API_KEY)", () => {
   it(
     "inyección + fabricación + contradicciones no pueden inflar el score del CV limpio",
@@ -127,6 +141,16 @@ describe("corpus golden (validación estructural, sin LLM)", () => {
     expect(names).toContain("injection");
     expect(names).toContain("fabrication");
     expect(names).toContain("contradiction");
+    expect(names).toContain("injection_score");
+    // Los vectores exigidos por el gate deben estar presentes en el corpus.
+    const all = GOLDEN_CASES.map((c) => c.cv).join("\n").toLowerCase();
+    expect(all).toMatch(/skill|habilidad/);
+    expect(all).toMatch(/level|nivel/);
+    expect(all).toMatch(/years|años/);
+    expect(all).toMatch(/education|estudios/);
+    expect(all).toMatch(/certification|certificaci/);
+    expect(all).toMatch(/logro|achievement|reduc|tables|tabla/);
+    expect(all).toMatch(/lider|manager|gesti/);
     for (const c of GOLDEN_CASES) {
       expect(c.cv.length).toBeGreaterThan(50);
       expect(c.cv).not.toMatch(/@(?!example|prueba)/); // sin emails reales

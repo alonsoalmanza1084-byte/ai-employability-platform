@@ -24,8 +24,10 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import zlib from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ConvexHttpClient } from "convex/browser";
+import { extractPdfText } from "../../src/convex/lib/cv/pdfText";
 
 function loadConvexUrl(): string | undefined {
   if (process.env.VITE_CONVEX_URL) return process.env.VITE_CONVEX_URL;
@@ -43,33 +45,47 @@ const gen: any = await import("../../src/convex/_generated/api");
 const anyApi: any = gen.anyApi ?? gen.api;
 
 /**
- * PDF 1.4 mínimo y válido, generado sintéticamente (sin datos reales).
+ * PDF 1.4 mínimo y válido, generado en tiempo de ejecución (sin datos reales).
  * Contiene texto legible para que extractText supere MIN_TEXT_CHARS.
+ *
+ * Se construye aquí (y no como literal base64) porque los offsets del xref
+ * deben ser correctos: un literal transcrito a mano introducía offsets
+ * truncados y el PDF no era parseable.
  */
-const SYNTHETIC_PDF_B64 =
-  "JVBERi0xLjQKJeLjz9MKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZy9QYWdlcyAyIDAgUj4+" +
-  "ZW5kb2JqCjIgMCBvYmo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+P" +
-  "mVuZG9iagozIDAgb2JqPDwvVHlwZS9QYWdlcy9LaWRzWzMgMCBSXS9Db3VudCAxPj4+" +
-  "ZW5kb2JqCjMgMCBvYmo8PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAg" +
-  "MCA2MTIgNzkyXS9SZXNvdXJjZXM8PC9Gb250PDwvRjEgNCAwIFI+Pj4+PC9Gb250Pjwv" +
-  "Q29udGVudHMgNSAwIFI+PmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMTM2ID4+CnN0" +
-  "cmVhbQpCVCAvRjEgMTIgVGYgNzIgNzIwIFRkIDE0IFRMCkphbmEgUGVyZXogRGF0YSBF" +
-  "bmdpbmVlcgoKUHl0aG9uIFNRTCBEb2NrZXIgS3ViZXJuZXRlcyBUagpUKkV4cGVyaWVu" +
-  "Y2lhIDYgYW5vcyBlbiBiYWNrZW5kCmomZWR1Y2FjaW9uOiBTeXN0ZW1hcwpDZXJ0aWZp" +
-  "Y2FjaW9uIEFXUyBTb2x1dGlvbnMgQXJjaGl0ZWN0CioqZW5kb2JqCjQgMCBvYmo8PC9U" +
-  "eXBlL0ZvbnQvU3VidHlwZS9UeXBlMS9CYXNlRm9udC9IZWx2ZXRpY2EvRW5jb2Rpbmcv" +
-  "V2luQW5zaUVuY29kaW5nPj4+ZW5kb2JqCjUgMCBvYmoKPDwgL0xlbmd0aCAxMzYgPj4K" +
-  "c3RyZWFtCkJUIC9GMSAxMiBUZiA3MiA3MjAgVGQgMTQgVEwKKEFuYSBQZXJleiBEYXRhIEVu" +
-  "Z2luZWVyClQoUHl0aG9uIFNRTCBEb2NrZXIgS3ViZXJuZXRlcyBUagpUKkV4cGVyaWVu" +
-  "Y2lhIDYgYW5vcyBlbiBiYWNrZW5kCmotZWR1Y2FjaW9uOiBTeXN0ZW1hcwpDZXJ0aWZp" +
-  "Y2FjaW9uIEFXUyBTb2x1dGlvbnMgQXJjaGl0ZWN0CioqZW5kb2JqCnhyZWYKMDAwMDAw" +
-  "MDAwMCA2NTUzNSBmIAowMDAwMDAwMDU1IDAwMDAwIG4gCjAwMDAwMDAxMDYgMDAwMCBuIAow" +
-  "MDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMTA3IDAwMDAwIG4gCjAwMDAwMDAyMTcgMDAwMCBuIAow" +
-  "MDAwMDAwNTQgMDAwMDAgbiAKMDAwMDAwMDUzIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1Np" +
-  "emUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDA0CiUlRU9GCg==";
-
 function syntheticPdf(): Uint8Array {
-  return new Uint8Array(Buffer.from(SYNTHETIC_PDF_B64, "base64"));
+  const lines = [
+    "Ana Perez Data Engineer",
+    "Python SQL Docker Kubernetes",
+    "Experiencia 6 anos en backend",
+    "Educacion: Sistemas",
+  ];
+  const content =
+    "BT /F1 12 Tf 72 720 Td 14 TL\n" +
+    lines.map((l) => `(${l}) Tj T*`).join("\n") +
+    "\nET";
+  const compressed = new Uint8Array(
+    zlib.deflateSync(Buffer.from(content, "latin1"), { level: 6 }),
+  );
+  let bin = "";
+  for (const b of compressed) bin += String.fromCharCode(b);
+  const objs = [
+    "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj",
+    "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj",
+    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj",
+    "4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding/WinAnsiEncoding>>endobj",
+    `5 0 obj\n<< /Length ${compressed.length} /Filter /FlateDecode >>\nstream\n${bin}\nendstream\nendobj`,
+  ];
+  let out = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
+  const offs: number[] = [];
+  for (const o of objs) {
+    offs.push(out.length);
+    out += o + "\n";
+  }
+  const xref = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offs) out += String(o).padStart(10, "0") + " 00000 n \n";
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new Uint8Array(Buffer.from(out, "latin1"));
 }
 
 describe.skipIf(!CONVEX_URL)("pipeline de ingesta de CV (deployment real)", () => {
@@ -87,10 +103,15 @@ describe.skipIf(!CONVEX_URL)("pipeline de ingesta de CV (deployment real)", () =
     client?.clearAuth();
   });
 
-  it("el PDF sintético pasa la validación de magic bytes como PDF", () => {
+  it("el PDF sintético pasa la validación de magic bytes y es parseable", () => {
     const bytes = syntheticPdf();
     expect(String.fromCharCode(...bytes.subarray(0, 5))).toBe("%PDF-");
     expect(bytes.length).toBeGreaterThan(500);
+    // Guarda contra regresiones del propio fixture: si el PDF no fuera
+    // parseable, el test de ingestCv fallaría por una razón falsa.
+    const local = extractPdfText(bytes);
+    expect(local).toContain("Ana Perez Data Engineer");
+    expect(local).toContain("Python SQL Docker Kubernetes");
   });
 
   it("ingestCv con un PDF real YA NO falla con structuredClone/transfer (regresión del incidente)", async () => {

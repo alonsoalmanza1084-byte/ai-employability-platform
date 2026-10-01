@@ -136,7 +136,13 @@ interface Fixture {
   store: Store;
   ctx: any;
   rowsOf: (t: string) => Row[];
-  users: { admin: string; recruiter: string; manager: string; outsider: string };
+  users: {
+    admin: string;
+    recruiter: string;
+    manager: string;
+    outsider: string;
+    candidate: string;
+  };
 }
 
 function seed(): Fixture {
@@ -152,6 +158,9 @@ function seed(): Fixture {
   const recruiter = mkUser("rec@corp.test");
   const manager = mkUser("hm@corp.test");
   const outsider = mkUser("out@other.test");
+  // Candidato: usuario autenticado SIN ninguna membresía de organización
+  // (representa el rol `candidate` del producto).
+  const candidate = mkUser("candidate@mail.test");
 
   rowsOf("organizations").push({ _id: ORG_A, name: "Org A", slug: "org-a", createdByUserId: admin });
   rowsOf("organizations").push({ _id: ORG_B, name: "Org B", slug: "org-b", createdByUserId: outsider });
@@ -174,7 +183,7 @@ function seed(): Fixture {
     store,
     ctx: { db, auth: null },
     rowsOf,
-    users: { admin, recruiter, manager, outsider },
+    users: { admin, recruiter, manager, outsider, candidate },
   };
 }
 
@@ -525,6 +534,74 @@ describe("removeMember: revocación de acceso (control de seguridad, no feature)
     );
     expect(r.ok).toBe(false);
     expect(f.rowsOf("organizationMembers").some((m) => m.userId === f.users.admin)).toBe(true);
+  });
+
+  it("un CANDIDATO (sin membresía) no puede remover miembros ni leer el trail", async () => {
+    // El candidato no tiene fila en organizationMembers: requireMembership
+    // debe negarle ANTES de cualquier operación administrativa.
+    const candidate = f.users.candidate;
+    expect(
+      f.rowsOf("organizationMembers").some((m) => m.userId === candidate),
+    ).toBe(false);
+
+    for (const fn of [orgs.removeMember, orgs.revokeInvite, orgs.auditTrail, orgs.pendingInvites]) {
+      const args =
+        fn === orgs.removeMember
+          ? { organizationId: ORG_A, targetUserId: f.users.manager }
+          : fn === orgs.revokeInvite
+            ? { organizationId: ORG_A, invitationId: f.users.manager }
+            : { organizationId: ORG_A };
+      const r = await capture(call(fn, as(f, candidate), args));
+      expect(r.ok, `candidato no debe ejecutar ${fn}`).toBe(false);
+      expect(r.msg).toContain("NOT_FOUND");
+    }
+    // Nadie fue removido por el candidato.
+    expect(
+      f.rowsOf("organizationMembers").some((m) => m.userId === f.users.manager),
+    ).toBe(true);
+  });
+
+  it("sesión YA AUTENTICADA tras la revocación: el token sigue vivo pero el acceso a la org muere", async () => {
+    // Preparación: el recruiter tiene una sesión activa (getAuthUserId devuelve
+    // su id) y accede a la org.
+    const recruiter = f.users.recruiter;
+    const before = await capture(
+      call(orgs.members, as(f, recruiter), { organizationId: ORG_A }),
+    );
+    expect(before.ok, "el recruiter accede antes de la revocación").toBe(true);
+
+    // El org_admin lo remueve.
+    const rm = await capture(
+      call(orgs.removeMember, as(f, f.users.admin), {
+        organizationId: ORG_A,
+        targetUserId: recruiter,
+      }),
+    );
+    expect(rm.ok, rm.ok ? "" : rm.msg).toBe(true);
+
+    // IMPORTANTE: la SESIÓN no se invalida (no borramos authSessions): el mismo
+    // usuario sigue "autenticado". Lo que muere es el ACCESO a la org, porque
+    // requireMembership vuelve a leer la fila de membresía en cada llamada.
+    const stillAuthenticated = await capture(
+      call(orgs.myOrgs, as(f, recruiter), {}),
+    );
+    expect(stillAuthenticated.ok, "la sesión sigue viva").toBe(true);
+    expect(
+      (stillAuthenticated.res as any[]).some((o: any) => o._id === ORG_A),
+      "ya no aparece la org en myOrgs",
+    ).toBe(false);
+
+    // Toda operación sobre la org queda negada para esa SESIÓN existente.
+    for (const [fn, args] of [
+      [orgs.members, { organizationId: ORG_A }],
+      [orgs.pendingInvites, { organizationId: ORG_A }],
+      [orgs.auditTrail, { organizationId: ORG_A }],
+      [orgs.invite, { organizationId: ORG_A, email: "z@corp.test", role: "recruiter" }],
+    ] as const) {
+      const r = await capture(call(fn as any, as(f, recruiter), args as any));
+      expect(r.ok, `tras revocación debe denegar ${(fn as any).name}`).toBe(false);
+      expect(r.msg).toContain("NOT_FOUND");
+    }
   });
 
   it("destino que no es miembro de ESA org → NOT_FOUND (no revela existencia)", async () => {

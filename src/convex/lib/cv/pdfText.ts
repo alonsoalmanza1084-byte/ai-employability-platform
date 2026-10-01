@@ -46,13 +46,6 @@ function toLatin1(bytes: Uint8Array): string {
   return out;
 }
 
-/** string latin1 → Uint8Array. */
-function fromLatin1(s: string): Uint8Array {
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 0xff;
-  return out;
-}
-
 interface PdfObject {
   num: number;
   dict: string;
@@ -127,29 +120,14 @@ function decodeStream(obj: PdfObject): string | null {
     return toLatin1(raw.subarray(0, MAX_DECOMPRESSED_BYTES));
   }
   try {
-    const out = zlib.inflateSync(Buffer.from(raw), {
-      maxOutputLength: MAX_DECOMPRESSED_BYTES,
-    });
-    //(zip-bomb: ratio absurdo con datos legítimos).
-    if (raw.length > 0 && out.length / raw.length > MAX_COMPRESSION_RATIO) {
+    const out = inflate(raw, MAX_DECOMPRESSED_BYTES);
+    // Anti zip-bomb: un ratio de compresión absurdo no es un PDF legítimo.
+    if (raw.length > 0 && out.data.length / raw.length > MAX_COMPRESSION_RATIO) {
       return null;
     }
-    return toLatin1(new Uint8Array(out));
+    return toLatin1(out.data);
   } catch {
-    // Algunos Producers emiten streams Flate con datos truncados: probamos
-    // inflate parcial antes de rendirlos.
-    try {
-      const out = zlib.inflateSync(Buffer.from(raw), {
-        finishFlush: zlib.constants.Z_SYNC_FLUSH,
-        maxOutputLength: MAX_DECOMPRESSED_BYTES,
-      });
-      if (raw.length > 0 && out.length / raw.length > MAX_COMPRESSION_RATIO) {
-        return null;
-      }
-      return toLatin1(new Uint8Array(out));
-    } catch {
-      return null;
-    }
+    return null;
   }
 }
 
@@ -248,7 +226,9 @@ function normalizeCode(hex: string, codeBytes: 1 | 2): string {
 function decodeLiteral(src: string, start: number): { text: string; end: number } | null {
   let out = "";
   let i = start;
-  let depth = 0;
+  // `start` apunta al caracter DESPUÉS del "(" de apertura, así que el nivel de
+  // anidamiento empieza en 1: el primer ")" sin escapar cierra la cadena.
+  let depth = 1;
   for (; i < src.length; i++) {
     const ch = src[i];
     if (ch === "\\") {
@@ -281,7 +261,7 @@ function decodeLiteral(src: string, start: number): { text: string; end: number 
     }
     if (ch === "(") {
       depth++;
-      if (depth > 1) out += ch;
+      out += ch;
       continue;
     }
     if (ch === ")") {
@@ -330,18 +310,15 @@ interface FontInfo {
 /** Carga la fuente /F desde el contenido y su CMap si existe. */
 function loadFont(resources: string, fontRes: string, objs: Map<number, PdfObject>): FontInfo {
   // resources: "<</Font<</F1 5 0 R>> ...>>"
+  // El dict /Font puede ser inline (<< /F1 5 0 R >>) o una referencia.
   const fontDictRef = resources.match(/\/Font\s*<<([\s\S]*?)>>/);
-  const inlineFontDict =
-    (fontDictRef && fontDictRef[1]) ??
-    (() => {
-      const ref = resources.match(/\/Font\s+(\d+)\s+\d+\s+R/);
-      if (!ref) return null;
-      const fontObj = objs.get(Number(ref[1]));
-      return fontObj ? fontObj.dict : null;
-    })();
+  let fontDictDict: string | null = fontDictRef ? fontDictRef[1] : null;
+  if (fontDictDict === null) {
+    const ref = resources.match(/\/Font\s+(\d+)\s+\d+\s+R/);
+    if (ref) fontDictDict = objs.get(Number(ref[1]))?.dict ?? null;
+  }
   const entry = fontRes.match(/[A-Za-z0-9#._-]+/)?.[0];
-  if (!fontDictDict) return { cid: false, cmap: null };
-  if (!entry) return { cid: false, cmap: null };
+  if (!fontDictDict || !entry) return { cid: false, cmap: null };
   const fontRef = new RegExp(`/${escapeRe(entry)}\\s+(\\d+)\\s+\\d+\\s+R`).exec(
     fontDictDict,
   );
@@ -476,11 +453,17 @@ export function extractPdfText(bytes: Uint8Array): string {
         // /Contents puede ser un stream directo (inline).
         continue;
       }
+      // /Resources puede ser un dict INLINE (<< /Font << /F1 4 0 R >> >>) o una
+      // referencia "N 0 R". En el caso inline NO hay que resolver un objeto: el
+      // dict está en la propia página (si lo tratáramos como referencia,
+      // interpretaríamos el primer número como id y perderíamos las fuentes).
       const resourcesRef = dictEntry(page.dict, "Resources");
-      const resourcesObj = resourcesRef
-        ? objs.get(Number(resourcesRef.match(/(\d+)/)?.[1] ?? -1))
-        : null;
-      const resources = resourcesObj?.dict ?? "";
+      let resources = "";
+      if (resourcesRef?.trimStart().startsWith("<<")) {
+        resources = resourcesRef;
+      } else if (resourcesRef) {
+        resources = objs.get(Number(resourcesRef.match(/(\d+)/)?.[1] ?? -1))?.dict ?? "";
+      }
       for (const ref of refs) {
         const streamObj = objs.get(ref);
         if (!streamObj) continue;

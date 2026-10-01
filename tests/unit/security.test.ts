@@ -319,7 +319,26 @@ describe("post-check de evidencia", () => {
     const real = result.extraction.skills.find((s) => s.name === "Python")!;
     expect(ghost.level).toBeLessThanOrEqual(2);
     expect(ghost.confidence ?? 1).toBeLessThanOrEqual(0.5);
-    expect(real.level).toBe(4); // la real no se toca
+    // La real NO se degrada a nivel de fantasma, pero sí se acota al techo que
+    // el texto sustenta (auditoría #3: sin marcadores de seniority, 4 no es
+    // justificable y un LLM obediente no podíaaths declararlo).
+    expect(real.level).toBeLessThanOrEqual(3);
+  });
+
+  it("el techo de nivel SÍ sube si el texto aporta marcadores de seniority", () => {
+    const seniorText =
+      "Ana García. Arquitecta de datos senior con 9 años de experiencia. " +
+      "Skills: Python, SQL y Tableau. En Acme Corp lideré la migración.";
+    const extraction = cvExtractionSchema.parse({
+      skills: [{ name: "Python", level: 5 }],
+      experience: [],
+      education: [],
+      certifications: [],
+    });
+    const result = verifyExtractionAgainstSource(seniorText, extraction);
+    const python = result.extraction.skills.find((s) => s.name === "Python")!;
+    // "Arquitecta" + "senior" justifican nivel 5 → no se recorta.
+    expect(python.level).toBe(5);
   });
 
   it("es determinista", () => {

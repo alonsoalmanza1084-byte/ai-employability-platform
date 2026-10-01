@@ -28,6 +28,9 @@ mkdir -p "$WORK"
 
 say() { printf '\n=== %s ===\n' "$1"; }
 fail() { printf 'FALLO: %s\n' "$1"; exit 1; }
+now_ms() { date +%s%3N; }
+T0=$(now_ms)
+T_BACKUP_END=0; T_LOSS_END=0; T_RESTORE_END=0
 
 # ---------------------------------------------------------------------------
 say "1. BACKUP — export completo (datos + binarios de storage)"
@@ -43,6 +46,8 @@ FULL_N=$(wc -l < "$FULL" | tr -d ' ')
 FULL_SHA=$(sha256sum "$FULL" | cut -d' ' -f1)
 printf 'filas iniciales : %s\nsha256 backup   : %s\n' "$FULL_N" "$FULL_SHA"
 [ "$FULL_N" -ge 1 ] || fail "la tabla $TABLE está vacía: el drill no probaría nada"
+T_BACKUP_END=$(now_ms)
+BACKUP_MS=$((T_BACKUP_END - T0))
 
 # ---------------------------------------------------------------------------
 say "2. RESTORE #1 — importar el snapshot desde el archivo (sin leer la BD)"
@@ -69,6 +74,8 @@ N2=$(wc -l < "$WORK/a2/$TABLE/documents.jsonl" | tr -d ' ')
 printf 'filas tras la pérdida : %s\n' "$N2"
 [ "$N2" -lt "$FULL_N" ] || fail "la pérdida simulada no redujo los datos ($N2 >= $FULL_N)"
 say "   OK: datos perdidos ($FULL_N -> $N2)"
+T_LOSS_END=$(now_ms)
+LOSS_MS=$((T_LOSS_END - T_BACKUP_END))
 
 # ---------------------------------------------------------------------------
 say "4. RESTORE #2 — recuperar desde el MISMO backup"
@@ -87,8 +94,20 @@ IDX_FULL=$(grep -o '"_id":"[^"]*"' "$FULL" | sort | sha256sum | cut -d' ' -f1)
 IDX_A3=$(grep -o '"_id":"[^"]*"' "$WORK/a3/$TABLE/documents.jsonl" | sort | sha256sum | cut -d' ' -f1)
 [ "$IDX_FULL" = "$IDX_A3" ] || fail "los _id NO se preservaron en el restore"
 say "   OK: mismos IDs, mismo contenido, mismo sha256"
+T_RESTORE_END=$(now_ms)
+RESTORE_MS=$((T_RESTORE_END - T_LOSS_END))
+TOTAL_MS=$((T_RESTORE_END - T0))
 
 # ---------------------------------------------------------------------------
 say "RESULTADO"
-printf 'BACKUP_SHA256=%s\nRESTORE_ROWS=%s\nID_SET_SHA256=%s\nDRILL=PASS\n' \
+printf 'BACKUP_SHA256=%s\nRESTORE_ROWS=%s\nID_SET_SHA256=%s\n' \
   "$FULL_SHA" "$N3" "$IDX_FULL"
+# ── MEDICIONES (base para un RTO, NO una promesa de RTO) ───────────────────
+# Alcance: RESTORE DE UNA TABLA sobre el MISMO deployment. NO es un restore de
+# base de datos completa en un deployment vacío (bloqueado por deploy key).
+printf 'SCOPE=table_level_same_deployment\n'
+printf 'BACKUP_DURATION_MS=%s\n' "$BACKUP_MS"
+printf 'LOSS_SIMULATION_MS=%s\n' "$LOSS_MS"
+printf 'RESTORE_DURATION_MS=%s\n' "$RESTORE_MS"
+printf 'TOTAL_RECOVERY_TIME_MS=%s\n' "$TOTAL_MS"
+printf 'DRILL=PASS\n'

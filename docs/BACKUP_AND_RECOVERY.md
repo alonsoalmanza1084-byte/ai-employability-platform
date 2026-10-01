@@ -136,12 +136,58 @@ acto y el sha256 final lo demuestra.
 
 | Métrica | TARGET | ASSUMPTION | MEASURED | Status |
 |---|---|---|---|---|
-| **RPO** (dato máximo aceptable perdido) | Por definir con negocio | "El provider toma snapshots diarios" — **NO VERIFICADO**: no hay acceso al panel para confirmar frecuencia ni retención | No medido | **NOT VERIFIED** |
-| **RTO** (tiempo máximo fuera de servicio) | Por definir con negocio | "Un restore completo son minutos" — **NO VERIFICADO**: no se ha restaurado una base completa | No medido | **NOT VERIFIED** |
+| **RPO** (dato máximo aceptable perdido) | **NO DEFINIDO** — falta el objetivo de negocio | Ninguna: no se inventa un número | No medido | **NOT_DEFINED** |
+| **RTO** a nivel de **tabla**, mismo deployment | — | Ninguna | **17.071 ms** (backup 2.668 + pérdida simulada 9.255 + restore 5.148) | **MEASURED (ámbito limitado)** |
+| **RTO** a nivel de **deployment completo** | **NO DEFINIDO** — falta el objetivo de negocio | "Un restore completo son minutos" — **NO VERIFICADO** | No medible | **NOT_MEASURED / BLOCKED_BY_PLATFORM** |
 
-No se presenta ninguna estimación como garantía. Los valores reales deben salir
-de: (a) ejecutar un restore completo en un deployment de destino y cronometrarlo,
-(b) la política de retención del proveedor.
+### Lo que sí está medido (ejecutado, no estimado)
+
+```bash
+bash scripts/backup_restore_drill.sh
+```
+
+```
+BACKUP_SHA256=4eda948ae67258e0d2509c6345d4e6ee33e0cf4815614f7704026c5ee47461d1
+RESTORE_ROWS=1101
+ID_SET_SHA256=e6a1b7a69dd205f28ce5bb8a3c36153b926923b1661dfc0c81717ba1d1ca9b73
+SCOPE=table_level_same_deployment
+BACKUP_DURATION_MS=2668
+LOSS_SIMULATION_MS=9255
+RESTORE_DURATION_MS=5148
+TOTAL_RECOVERY_TIME_MS=17071
+DRILL=PASS
+```
+
+**Este número NO es el RTO de producción.** Es el tiempo de ciclo de una tabla
+de 1.101 filas dentro del mismo deployment. Un restore completo incluye 26
+tablas, 362 binarios, la reconstrucción del deployment y la reconfiguración de
+secretos. Publicar 17 s como RTO sería una falsificación.
+
+### Por qué el restore completo no se ha medido
+
+`bunx convex deployment create` falla en este entorno:
+
+```
+isn't supported with a deploy key (CONVEX_DEPLOY_KEY)
+```
+
+Sin un deployment de destino no hay un restore completo que cronometrar.
+Se necesita una **project key** (no una deploy key). Estado:
+`BLOCKED_BY_PLATFORM`, no `PASS`.
+
+### Nota operativa sobre el bloqueo de export
+
+Durante esta sesión, `convex export` devolvió repetidamente:
+
+```
+ExportInProgress: There is already an export requested or in progress.
+```
+
+El servicio de export es **uno a la vez**: un export en curso bloquea el
+siguiente, y el bloqueo persistió tras esperas de 45 s, 120 s, 150 s y 240 s.
+Consecuencia operativa: **los backups automáticos no pueden solaparse** y
+ningún proceso de restore debe empezar mientras otro export esté en vuelo.
+El lock se liberó por sí solo y `backup_verify.sh` volvió a dar `PASS`.
 
 ---
 
@@ -150,10 +196,11 @@ de: (a) ejecutar un restore completo en un deployment de destino y cronometrarlo
 | # | Acción | Responsable | Bloquea |
 |---|---|---|---|
 | 1 | Backup **automático** programado (cron/Task) con retención definida y copia **fuera del proveedor** | Operaciones / Plataforma | **Sí** |
-| 2 | Restauración completa probada en un deployment limpio (requiere project key, no deploy key) | Plataforma | **Sí** |
-| 3 | Gestión y rotación de secretos en el plan de recuperación | Seguridad | **Sí** |
-| 4 | RPO/RTO acordados con negocio y medidos en un drill completo | Producto + Operaciones | **Sí** |
+| 2 | Restauración completa probada en un deployment limpio (**requiere project key, no deploy key**: `convex deployment create` está bloqueado) | Plataforma | **Sí** |
+| 3 | Gestión y rotación de secretos en el plan de recuperación (VULN-11 sigue sin rotar) | Seguridad | **Sí** |
+| 4 | **RPO y RTO acordados con negocio** y medidos en un drill de deployment completo | Producto + Operaciones | **Sí** |
 | 5 | Verificación periódica automática de los sha256 del backup | QA | No |
+| 6 | Serializar los exports (el lock `ExportInProgress` impide backups solapados) | Operaciones | No |
 
 ---
 

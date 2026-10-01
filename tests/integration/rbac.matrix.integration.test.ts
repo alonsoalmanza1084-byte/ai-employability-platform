@@ -49,6 +49,10 @@ interface Manifest {
 
 const clients = {} as Record<Actor, ConvexHttpClient>;
 let M: Manifest;
+// Rol `anonymous`: cliente HTTP SIN ningún token. Se ejercita en la misma
+// matriz para que quede constancia explícita de que no hay ningún endpoint
+// de la organización accesible sin identidad.
+const anonymous = new ConvexHttpClient(CONVEX_URL ?? "http://localhost:3000");
 
 function clientFor(actor: Actor): ConvexHttpClient {
   return clients[actor];
@@ -450,6 +454,81 @@ describe.skipIf(!READY)("BLOQUE D — matriz RBAC end-to-end (sesiones reales)",
       );
     }
     console.log("RBAC_MATRIX " + JSON.stringify(attempts));
+
+    // ── anonymous: sin sesión, TODAS las clases de operación deben ser DENY ──
+    const anon: Record<string, string> = {};
+    const anonOps: Record<string, () => Promise<unknown>> = {
+      ver_vacante: () => anonymous.query(api["jobs"]["get"], { jobId: M.jobId }),
+      ver_miembros: () =>
+        anonymous.query(api["orgs"]["members"], { organizationId: M.orgId }),
+      ver_vacantes: () =>
+        anonymous.query(api["jobs"]["listByOrg"], { organizationId: M.orgId }),
+      crear_vacante: () =>
+        anonymous.mutation(api["jobs"]["create"], {
+          organizationId: M.orgId,
+          title: "Anon",
+          description: "Intento anónimo de crear vacante en la matriz RBAC",
+          requirements: [
+            { type: "skill", label: "Python", minLevel: 3, weight: 1, isMustHave: false },
+          ],
+        }),
+      cerrar_vacante: () => anonymous.mutation(api["jobs"]["close"], { jobId: M.jobId }),
+      subir_cv: () =>
+        anonymous.mutation(api["applications"]["initUpload"], {
+          jobId: M.jobId,
+          fileName: "anon.txt",
+          fileSize: 64,
+        }),
+      ver_applicants: () =>
+        anonymous.query(api["applications"]["listByJob"], { jobId: M.jobId }),
+      ver_match: () =>
+        anonymous.query(api["matches"]["getForApplication"], {
+          applicationId: M.applicationId,
+        }),
+      anotar: () =>
+        anonymous.mutation(api["applications"]["addNote"], {
+          applicationId: M.applicationId,
+          body: "Nota anónima: debe fallar",
+        }),
+      decidir: () =>
+        anonymous.mutation(api["applications"]["decide"], {
+          applicationId: M.applicationId,
+          status: "shortlisted",
+        }),
+      audit_log: () =>
+        anonymous.query(api["orgs"]["auditTrail"], { organizationId: M.orgId }),
+      invitar: () =>
+        anonymous.mutation(api["orgs"]["invite"], {
+          organizationId: M.orgId,
+          email: "anon@example.test",
+          role: "org_admin",
+        }),
+      quitar_miembro: () =>
+        anonymous.mutation(api["orgs"]["removeMember"], {
+          organizationId: M.orgId,
+          targetUserId: M.actors.org_admin.userId,
+        }),
+      cv_propio: () => anonymous.query(api["candidates"]["myProfile"], {}),
+      mis_resumes: () => anonymous.query(api["candidates"]["myResumes"], {}),
+    };
+    for (const [label, fn] of Object.entries(anonOps)) {
+      try {
+        const v = await fn();
+        const empty =
+          v === null ||
+          v === undefined ||
+          (Array.isArray(v) && v.length === 0) ||
+          (typeof v === "object" && !Array.isArray(v) && Object.keys(v as object).length === 0);
+        anon[label] = empty ? "DENY" : "ALLOW";
+      } catch {
+        anon[label] = "DENY";
+      }
+    }
+    console.log("RBAC_ANONYMOUS " + JSON.stringify(anon));
+    expect(
+      Object.values(anon).filter((v) => v !== "DENY"),
+      "anonymous obtuvo acceso a alguna operación: " + JSON.stringify(anon),
+    ).toEqual([]);
 
     const EXPECTED: Record<string, Record<string, string>> = {
       org_admin: {

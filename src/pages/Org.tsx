@@ -383,11 +383,14 @@ function UploadCvsDialog({
       for (const file of Array.from(files)) {
         const invalid = validateCvFile(file);
         if (invalid) throw new Error(invalid);
-        const { uploadUrl } = await initUpload({
+        const init = await initUpload({
           jobId,
           fileName: file.name,
           fileSize: file.size,
         });
+        // Contrato v2 (auditoría #6): la denegación llega como ok:false.
+        if (!init.ok) throw new Error(init.reason);
+        const { uploadUrl } = init;
         const storageId = await uploadToConvexStorage(uploadUrl, file);
         const { applicationId } = await finalizeUpload({
           jobId,

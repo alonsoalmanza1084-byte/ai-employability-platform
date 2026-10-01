@@ -78,11 +78,15 @@ export function CvUpload({ versions, onVersionsChanged }: Props) {
     }
     setBusy(true);
     try {
-      const { uploadUrl } = await initUpload({
+      const init = await initUpload({
         fileName: file.name,
         fileSize: file.size,
         mimeType: file.type || "application/octet-stream",
       });
+      // Contrato v2 (auditoría #6): la denegación llega como ok:false, no como
+      // excepción. Hay que comprobarlo explícitamente antes de usar uploadUrl.
+      if (!init.ok) throw new Error(init.reason);
+      const { uploadUrl } = init;
       const storageId = await uploadToConvexStorage(uploadUrl, file);
       const { resumeVersionId } = await finalizeUpload({
         fileName: file.name,

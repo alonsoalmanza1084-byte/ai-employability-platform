@@ -76,6 +76,19 @@ export const myResumes = query({
 /**
  * Paso 1 de subida: valida formato y límites, devuelve URL de subida directa
  * al storage privado. 🔍 (audit ocurre en finalizeUpload, cuando hay id)
+ *
+ * CONTRATO (auditoría #6): las denegaciones se DEVUELVEN como resultado
+ * discriminado `{ ok: false, reason }` en lugar de lanzar.
+ *
+ * POR QUÉ: en Convex una mutación es ACID. Si la mutación registra el evento de
+ * seguridad y después lanza, **el insert se revierte junto con todo lo demás**.
+ * Medido en el deployment real: `securityEvents` estaba VACÍO porque todos los
+ * caminos de denegación terminaban en `throw`.
+ *
+ * La denegación NO se debilita: el handler retorna ANTES de hacer cualquier
+ * trabajo (no se genera URL de subida, no se escribe nada), así que un cliente
+ * que ignorase el `ok:false` seguiría sin poder subir nada. El evento, en cambio,
+ * queda confirmado en la transacción.
  */
 export const initUpload = mutation({
   args: {
@@ -89,17 +102,17 @@ export const initUpload = mutation({
       await securityEvent(ctx, {
         kind: "upload_rejected",
         userId: user._id,
-        detail: `file too large: ${args.fileSize}`,
+        detail: "file_too_large",
       });
-      throw new Error("El archivo supera 10 MB.");
+      return { ok: false as const, reason: "El archivo supera 10 MB." };
     }
     if (!/\.(pdf|docx|txt)$/i.test(args.fileName)) {
       await securityEvent(ctx, {
         kind: "upload_rejected",
         userId: user._id,
-        detail: `bad extension: ${args.fileName.slice(-20)}`,
+        detail: "bad_extension",
       });
-      throw new Error("Formato no permitido. Usa PDF, DOCX o TXT.");
+      return { ok: false as const, reason: "Formato no permitido. Usa PDF, DOCX o TXT." };
     }
 
     const used = await countUsage(ctx, {
@@ -113,13 +126,14 @@ export const initUpload = mutation({
         userId: user._id,
         detail: "cv.upload daily limit",
       });
-      throw new Error(
-        `Alcanzaste el límite de ${LIMITS.cvUploadPerDay} CVs por día.`,
-      );
+      return {
+        ok: false as const,
+        reason: `Alcanzaste el límite de ${LIMITS.cvUploadPerDay} CVs por día.`,
+      };
     }
 
     const uploadUrl = await ctx.storage.generateUploadUrl();
-    return { uploadUrl };
+    return { ok: true as const, uploadUrl };
   },
 });
 

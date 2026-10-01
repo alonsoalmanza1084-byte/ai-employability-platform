@@ -8,7 +8,7 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireMembership } from "./lib/rbac";
-import { audit, countUsage, recordUsage } from "./lib/audit";
+import { audit, countUsage, recordUsage, securityEvent } from "./lib/audit";
 import { DAY_MS, LIMITS } from "./lib/limits";
 import { verifyExtractionAgainstSource } from "./lib/ai/evidence";
 import {
@@ -38,22 +38,46 @@ import { aiExtractionValidator, normalizeAiJson } from "./lib/ai/validators";
 const APPLICATIONS_PAGE = 200;
 const NOTES_PAGE = 200;
 
-/** Paso 1: URL de subida directa (recruiter/org_admin, límite por org). */
+/**
+ * Paso 1: URL de subida directa (recruiter/org_admin, límite por org).
+ *
+ * CONTRATO (auditoría #6): las denegaciones se DEVUELVEN como `{ ok:false }`
+ * en vez de lanzar, para que el `securityEvent` quede confirmado en la
+ * transacción (ver `candidates.initUpload` para la razón). La denegación no se
+ * debilita: se retorna antes de generar la URL de subida.
+ *
+ * NOTA: `requireMembership` sigue lanzando a propósito. Una denegación de
+ * autorización nunca puede convertirse en un "rechazo suave": si un cliente
+ * ignorase el resultado, tendría acceso sin autorización. Las denegaciones de
+ * autorización se auditan en `auditLog`/`securityEvents` cuando el rol tiene
+ * acceso; ver `docs/SECURITY_AUDIT.md` § VULN-12.
+ */
 export const initUpload = mutation({
   args: {
     jobId: v.id("jobs"),
     fileName: v.string(),
     fileSize: v.number(),
-  },  handler: async (ctx, args) => {
+  },
+  handler: async (ctx, args) => {
     const job: any = await ctx.db.get(args.jobId);
     if (!job) throw new Error("NOT_FOUND");
-    await requireMembership(ctx, job.organizationId, "recruiter");
+    const { userId } = await requireMembership(ctx, job.organizationId, "recruiter");
 
     if (args.fileSize > MAX_FILE_BYTES) {
-      throw new Error("El archivo supera 10 MB.");
+      await securityEvent(ctx, {
+        kind: "upload_rejected",
+        userId,
+        detail: "org_file_too_large",
+      });
+      return { ok: false as const, reason: "El archivo supera 10 MB." };
     }
     if (!/\.(pdf|docx|txt)$/i.test(args.fileName)) {
-      throw new Error("Formato no permitido. Usa PDF, DOCX o TXT.");
+      await securityEvent(ctx, {
+        kind: "upload_rejected",
+        userId,
+        detail: "org_bad_extension",
+      });
+      return { ok: false as const, reason: "Formato no permitido. Usa PDF, DOCX o TXT." };
     }
 
     const used = await countUsage(ctx, {
@@ -62,13 +86,19 @@ export const initUpload = mutation({
       sinceMs: DAY_MS,
     });
     if (used >= LIMITS.orgCvUploadPerDay) {
-      throw new Error(
-        `Límite de ${LIMITS.orgCvUploadPerDay} CVs por día para la organización.`,
-      );
+      await securityEvent(ctx, {
+        kind: "rate_limited",
+        userId,
+        detail: "org.cv.upload daily limit",
+      });
+      return {
+        ok: false as const,
+        reason: `Límite de ${LIMITS.orgCvUploadPerDay} CVs por día para la organización.`,
+      };
     }
 
     const uploadUrl = await ctx.storage.generateUploadUrl();
-    return { uploadUrl };
+    return { ok: true as const, uploadUrl };
   },
 });
 

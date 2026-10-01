@@ -76,7 +76,20 @@ export async function recordUsage(
   return true;
 }
 
-/** Cuenta eventos de uso en una ventana (rate limiting server-side). */
+/**
+ * Cuenta eventos de uso en una ventana (rate limiting server-side).
+ *
+ * Hardening (auditoría #2): antes hacía `.collect()` SIN límite y filtraba
+ * en memoria — con years de tráfico, `by_organizationId_and_kind` crece sin
+ * cota y cada rate-limit check se vuelve O(total histórico) en tiempo y
+ * memoria (doS de rendimiento; convex limita los scans por transacción).
+ * Ahora: `.take(COUNT_USAGE_MAX)` — como SOLO se usa para comparar contra un
+ * límite diario (todas las llamadas usan `sinceMs: DAY_MS`), basta con leer
+ * hasta LIMIT+1 filas: con ≥ límite+1 filas la decisión (bloquear) es la misma.
+ */
+/** Techo de filas leídas por chequeo de límite (≥ mayor límite diario). */
+export const COUNT_USAGE_MAX = 1000;
+
 export async function countUsage(
   ctx: { db: any },
   opts: {
@@ -87,13 +100,14 @@ export async function countUsage(
   },
 ): Promise<number> {
   const since = Date.now() - opts.sinceMs;
+  // take(COUNT_USAGE_MAX) — ver comentario del hardening arriba.
   if (opts.organizationId) {
     const rows = await ctx.db
       .query("usageEvents")
       .withIndex("by_organizationId_and_kind", (q: any) =>
         q.eq("organizationId", opts.organizationId).eq("kind", opts.kind),
       )
-      .collect();
+      .take(COUNT_USAGE_MAX);
     return rows.filter((r: any) => r._creationTime >= since).length;
   }
   if (opts.userId) {
@@ -102,7 +116,7 @@ export async function countUsage(
       .withIndex("by_userId_and_kind", (q: any) =>
         q.eq("userId", opts.userId).eq("kind", opts.kind),
       )
-      .collect();
+      .take(COUNT_USAGE_MAX);
     return rows.filter((r: any) => r._creationTime >= since).length;
   }
   return 0;

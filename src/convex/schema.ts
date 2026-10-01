@@ -83,6 +83,11 @@ const schema = defineSchema(
       image: v.optional(v.string()),
       email: v.optional(v.string()),
       emailVerificationTime: v.optional(v.number()),
+      // Campos de authTables (@convex-dev/auth): deben declararse aunque la app
+      // no use teléfono, o la validación del schema rechazaría documentos de
+      // usuarios que Convex Auth escriba con esos campos.
+      phone: v.optional(v.string()),
+      phoneVerificationTime: v.optional(v.number()),
       isAnonymous: v.optional(v.boolean()),
       role: v.optional(roleValidator),
     }).index("email", ["email"]),
@@ -303,7 +308,15 @@ const schema = defineSchema(
       action: v.string(),
       targetType: v.optional(v.string()),
       targetId: v.optional(v.string()),
-      metadata: v.optional(v.object({})),
+      // Registros conocidos y acotados (con v.any() la validación de schema no
+      // filtraría nada aquí; con el record tipado, cualquier clave imprevista
+      // ROMPE el push — señal deseada: obliga a declarar la clave nueva).
+      metadata: v.optional(
+        v.record(
+          v.string(),
+          v.union(v.string(), v.number(), v.boolean()),
+        ),
+      ),
     })
       .index("by_org", ["organizationId"])
       .index("by_actor", ["actorUserId"]),
@@ -317,7 +330,12 @@ const schema = defineSchema(
     notifications: defineTable({
       userId: v.id("users"),
       type: v.string(),
-      payload: v.optional(v.object({})),
+      payload: v.optional(
+        v.record(
+          v.string(),
+          v.union(v.string(), v.number(), v.boolean()),
+        ),
+      ),
       readAt: v.optional(v.number()),
     }).index("by_user", ["userId"]),
 
@@ -332,9 +350,11 @@ const schema = defineSchema(
       .index("by_userId_and_kind", ["userId", "kind"])
       .index("by_organizationId_and_kind", ["organizationId", "kind"]),
   },
-  {
-    schemaValidation: false,
-  },
+  // Validación de schema ACTIVADA (auditoría #2): Convex valida en runtime
+  // que todo documento nuevo o modificado coincide con este schema.
+  // Requisito previo (cumplido): metadata/payload tipados como record escalar,
+  // y users incluye los campos phone de authTables.
+  {},
 );
 
 export default schema;

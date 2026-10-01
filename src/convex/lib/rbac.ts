@@ -14,6 +14,13 @@ const HIERARCHY: Record<OrgRole, number> = {
  * Verifica membresía activa + rol mínimo dentro de la organización.
  * Server-side ONLY. Nunca confiar en rol/org enviados por el cliente.
  * Denegación = NOT_FOUND genérico (no filtramos existencia).
+ *
+ * Hardening (auditoría #2): un rol que NO esté en la jerarquía (fila
+ * corrupta/legacy) se trata como NEGACIÓN — con la comparación directa,
+ * `HIERARCHY[rolDesconocido] === undefined` hacía `undefined < minRole ===
+ * false` y el rol roto pasaba como org_admin. Defensa en profundidad: el
+ * validador del schema (orgRoleValidator) es la primera barrera; esta es la
+ * segunda.
  */
 export async function requireMembership(
   ctx: { db: any },
@@ -31,7 +38,12 @@ export async function requireMembership(
     .first();
 
   if (!member) throw new Error("NOT_FOUND");
-  if (HIERARCHY[member.role as OrgRole] < HIERARCHY[minRole]) {
+  const memberRank = HIERARCHY[member.role as OrgRole];
+  if (memberRank === undefined) {
+    // Rol desconocido → NEGAR (fail-closed). Nunca otorgar por un rol roto.
+    throw new Error("FORBIDDEN: no tienes permisos para esta acción.");
+  }
+  if (memberRank < HIERARCHY[minRole]) {
     throw new Error("FORBIDDEN: no tienes permisos para esta acción.");
   }
   return { userId, member };

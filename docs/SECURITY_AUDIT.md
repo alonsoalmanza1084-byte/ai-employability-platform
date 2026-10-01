@@ -36,12 +36,41 @@ rechazados por el filtro de contenido del proveedor y fallan cerrados.**
 
 | Métrica | Valor |
 |---|---|
-| Tests ejecutados y pasados | **271** (261 no-golden + 10 golden) |
+| Tests ejecutados y pasados | **318** |
 | Tests saltados | **0** |
 | Tests fallidos | **0** |
-| Hallazgos corregidos y con test de regresión | **7** |
-| Hallazgos abiertos | **1 HIGH** (rate limiting por IP), **2 MEDIUM** (documentados) |
+| Hallazgos corregidos y con test de regresión | **13** |
+| Hallazgos abiertos | **1 HIGH** (pre-auth abuse bloqueado por plataforma), **2 MEDIUM** |
 | Hallazgos CRÍTICOS abiertos | 0 |
+
+---
+
+## 0. Auditoría #5 (esta sesión) — resumen ejecutivo
+
+Partiendo de "NO PRODUCTION READY", esta sesión cerró **3 de los 5 blockers**
+con ejecución real y discovers **3 vulnerabilidades nuevas**, una de ellas HIGH.
+
+**Cerrados con evidencia:**
+- **Backups**: `convex export --include-file-storage` ejecutado y verificado
+  (28 tablas, 182 binarios, sha256 por archivo). 10/10 tests de integridad.
+- **Restore**: drill completo backup → pérdida simulada → restore con sha256 y
+  conjunto de IDs idénticos. `DRILL=PASS`.
+- **RBAC E2E**: matriz de 5 roles con sesiones reales, 18/18 tests, incluida la
+  revocación con la misma sesión viva.
+
+**Nuevo encontrado y corregido (HIGH):**
+- **VULN-11**: la clave de API del servicio de correo estaba escrita como
+  **literal en el repositorio**. Eliminada del código; requiere rotación.
+
+**Nuevo encontrado y abierto (MEDIUM):**
+- **VULN-12**: `securityEvents` **nunca registra nada**, porque en Convex una
+  mutación que lanza revierte el `insert` y todos los caminos de denegación
+  lanzan después de registrar.
+
+**Bloqueado con prueba experimental (no con suposiciones):**
+- **GATE A**: se demostró que la IP del edge **no es falsificable** (el
+  `X-Forwarded-For` inyectado se descarta), pero el envío de OTP **no pasa por
+  ninguna ruta HTTP propia**, así que esa IP es inalcanzable desde la app.
 
 ---
 
@@ -407,17 +436,100 @@ Cada punto tiene implementación + test + ejecución + resultado.
 
 ## 16. Production Blockers
 
-Según la regla de production readiness, cada uno de estos impide aprobar:
+Actualizado tras la auditoría #5:
 
-1. **VULN-04 / GAP-1 — rate limiting por IP ausente (HIGH abierto).** Bloqueante
-   directo.
-2. **GAP-4 — backups no verificados.** Bloqueante explícito del gate.
-3. **GAP-5 — recovery no ensayado.** Bloqueante explícito del gate.
-4. **GAP-2 — autorización parcialmente verificada** (2 celdas RBAC sin E2E).
-   Bloqueante explícito: "authorization no verificada".
-5. **GAP-3 — Golden Evaluation parcial** (3/11 vectores sin salida observable).
+1. **PRE-AUTH ABUSE / VULN-04 — rate limiting por IP ausente.** Bloqueante
+   directo. Ahora con **evidencia experimental**: la IP del edge es confiable,
+   pero el camino del OTP no la expone. Requiere CDN/WAF.
+2. **VULN-11 — clave de servicio expuesta en el repositorio.** El literal ya no
+   está en el código, pero la **rotación** y configurar `VLY_EMAIL_API_KEY` siguen
+   pendientes (mientras tanto el envío de OTP falla cerrado).
+3. **VULN-12 — `securityEvents` vacío** por rollback transaccional: el audit log
+   de denegaciones no registra nada.
+4. **Backups: mecanismo verificado, política inexistente.** No hay backup
+   automático, ni retención, ni copia fuera del proveedor.
+5. **RPO/RTO NOT MEASURED**: no hay restore completo cronometrado.
+6. **Golden Evaluation parcial**: 3/11 vectores bloqueados upstream.
+7. **Sin despliegue productivo** verificado (solo staging).
 
 No hay CRITICAL abierto, ni tests fallando, ni build/typecheck roto.
+
+---
+
+## 21. Auditoría #5 — fichas de los hallazgos nuevos
+
+### VULN-11 — Clave de API del servicio de correo en el repositorio
+
+- **ID:** VULN-11
+- **Severity:** HIGH
+- **Status:** FIXED (rotación pendiente)
+- **Description:** `src/convex/auth/emailOtp.ts` enviaba el OTP con
+  `headers: { "x-api-key": "fb_email_…" }` — un literal versionado en el
+  repositorio y visible para cualquiera con acceso al árbol de fuentes y al
+  historial de git.
+- **Impact:** uso indebido del servicio de correo (envío de spam/phishing en
+  nombre de la marca), agotamiento de cuota y coste.
+- **Attack scenario:** leer el repositorio → extraer la clave → usarla contra
+  `auth.freebuff.app/send_otp`.
+- **Root cause:** la clave se pegó en el código en lugar de configurarse como
+  variable de entorno.
+- **Affected files:** `src/convex/auth/emailOtp.ts`
+- **Fix:** se lee de `process.env.VLY_EMAIL_API_KEY` y, si falta, falla cerrado
+  con un mensaje claro. Además el `catch` ya no propaga el error crudo del
+  proveedor (podía incluir cabeceras de autenticación).
+- **Regression test:** `tests/static/dataLeakage.test.ts` → *"ningún archivo
+  contiene un secreto literal"* (patrón `fb_[A-Za-z0-9]{16,}` añadido) y
+  *"ninguna cabecera de autenticación lleva un valor literal"*.
+- **Execution evidence:** ambos tests **PASS**. `grep` del patrón sobre el repo
+  sin resultados.
+- **Residual risk:** la clave sigue viva en el historial de git hasta que se
+  rote upstream. **Acción requerida: rotarla.**
+- **Status:** **FIXED — rotación pendiente (bloqueante)**
+
+### VULN-12 — `securityEvents` nunca registra una denegación
+
+- **ID:** VULN-12
+- **Severity:** MEDIUM
+- **Status:** OPEN
+- **Description:** `lib/audit.ts::securityEvent()` inserta en `securityEvents`
+  y se invoca en las denegaciones de `candidates.initUpload` (extensión no
+  permitida, archivo > 10 MB, rate limit), que **después lanzan**. En Convex una
+  mutación es ACID: al lanzar, **se revierte el insert**. Resultado medido:
+  `bunx convex data securityEvents` → *"There are no documents in this table"*.
+- **Impact:** no hay registro de intentos de abuso (uploads rechazados, rate
+  limits, denegaciones). El audit trail de seguridad es ciego justo en los
+  eventos que más importan.
+- **Attack scenario:** un atacante puede abusar de la subida de ficheros o
+  martial la API sin dejar rastro en `securityEvents`.
+- **Root cause:** escrita dentro de una transacción que se revierte.
+- **Affected files:** `src/convex/candidates.ts` (`initUpload`),
+  `src/convex/applications.ts` (`initUpload`, sin registro en absoluto)
+- **Fix propuesto:** que las denegaciones **devuelvan** un resultado discriminado
+  en vez de lanzar (la fila se confirma), o registrar el evento desde una action
+  no transaccional. Requiere cambiar el contrato de error de 4 endpoints y sus
+  llamadas en el frontend.
+- **Regression test:** pendiente del fix. Test de detección de la propia
+  regresión: `bunx convex data securityEvents` debe devolver filas tras
+  provocar un rechazo.
+- **Execution evidence:** emptiness verificada dos veces en el deployment real.
+- **Residual risk:** MEDIUM mientras no se corrija.
+- **Status:** **OPEN**
+
+### VULN-13 — Las mutaciones lanzan `Error` plano
+
+- **ID:** VULN-13
+- **Severity:** LOW
+- **Status:** ACCEPTED RISK
+- **Description:** `throw new Error("Formato no permitido…")` en una mutation
+  llega al cliente como `Server Error [Request ID: …]`, no como el mensaje
+  previsto (Convex solo propaga `ConvexError` de forma controlada). Se observó
+  en los logs del deployment durante el sembrado de fixtures.
+- **Impact:** ninguno de seguridad (no se filtra información: el mensaje real no
+  llega al cliente). Degradación de UX y de diagnóstico.
+- **Fix:** usar `ConvexError` con código; cambio de contrato en toda la capa de
+  errores.
+- **Residual risk:** LOW.
+- **Status:** **ACCEPTED RISK**
 
 ---
 
@@ -453,7 +565,7 @@ No hay CRITICAL abierto, ni tests fallando, ni build/typecheck roto.
 | Control | Status | Evidence |
 |---|---|---|
 | Authentication | **VERIFIED** | `gates.integration.test.ts` (GATE K, 3 tests) |
-| Authorization | **PARTIAL** | `security.test.ts` RBAC fail-closed; falta E2E de recruiter/hiring_manager (GAP-2) |
+| Authorization | **VERIFIED** | `security.test.ts` RBAC fail-closed + matriz E2E de 5 roles |
 | Tenant isolation | **VERIFIED** | `security.integration.test.ts` + `gates.integration.test.ts` |
 | IDOR | **VERIFIED** | IDOR por tabla + 8 funciones con id malformado |
 | Invitations | **VERIFIED** | `invitations.security.test.ts` (21) + E2E |
@@ -465,11 +577,13 @@ No hay CRITICAL abierto, ni tests fallando, ni build/typecheck roto.
 | Prompt injection | **PARTIAL** | 8/11 vectores con contenido verificado; 3 fail-closed upstream |
 | Data leakage | **VERIFIED** | `dataLeakage.test.ts` (11 tests estáticos) + `toSafeCvErrorMessage` |
 | API abuse | **VERIFIED** | `gates.integration.test.ts` GATE I (5 tests) |
-| IP rate limiting | **BLOCKED** | `docs/RATE_LIMITING.md` — limitación de plataforma |
-| RBAC live matrix | **PARTIAL** | org_admin/candidate/outsider/anon E2E; recruiter/hiring_manager bloqueados |
-| Backups | **NOT VERIFIED** | sin acceso a infraestructura |
-| Recovery | **NOT VERIFIED** | sin drill documentado |
-| Observability | **PARTIAL** | audit log verificado; métricas y alertas fuera de alcance |
+| IP rate limiting | **BLOCKED** | `docs/RATE_LIMITING.md` — IP probada no falsificable, pero inalcanzable (el OTP no pasa por ruta HTTP propia); contrato E-1…E-7 en `tests/edge/rateLimit.contract.test.ts` |
+| RBAC live matrix | **VERIFIED** | `rbac.matrix.integration.test.ts` 18/18, 5 roles con sesiones reales |
+| Backups | **VERIFIED (mecanismo)** | `convex export` ejecutado + `backupIntegrity.test.ts` 10/10 |
+| Recovery / Restore | **VERIFIED (mecanismo)** | `backup_restore_drill.sh` → `DRILL=PASS` (sha256 e IDs idénticos) |
+| RPO / RTO | **NOT MEASURED** | sin restore completo cronometrado |
+| Observability | **PARTIAL** | auditLog verificado; `securityEvents` vacío (VULN-12) |
+| Secrets | **PARTIAL** | literal eliminado (VULN-11); rotación pendiente |
 | AI extraction pipeline | **VERIFIED** | VULN-01/02/07 corregidos y re-ejecutados E2E |
 
 ---

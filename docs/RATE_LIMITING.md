@@ -1,139 +1,183 @@
-# RATE_LIMITING.md — Control de abuso pre-autenticación (GATE B)
+# RATE_LIMITING.md — Control de abuso pre-autenticación (GATE A)
 
-> **ESTADO: PARTIAL / BLOCKED (infraestructura externa).**
-> El rate limiting **por IP no está implementado** porque la plataforma actual
-> no expone la IP del cliente en el punto donde haría falta. No se ha simulado
-> ni falseado. Este documento describe exactamente qué falta, dónde debe
-> vivir, cómo se configura, qué test lo cerraría y cuál es el criterio de
-> aceptación.
-
----
-
-## 1. Qué SÍ está implementado y verificado
-
-| Control | Dónde | Estado | Evidencia |
-|---|---|---|---|
-| Límite de envío OTP por email (5/email/hora) | `src/convex/auth/otpThrottle.ts` | **VERIFIED** | `tests/unit/security.test.ts` → "throttle de envío OTP (pre-auth)" (6 tests) |
-| Tope global horario de OTP (200/hora) | `src/convex/auth/otpThrottle.ts` (`OTP_GLOBAL_HOURLY_CAP`) | **VERIFIED** | mismo suite: "el backstop global corta la rotación de emails" |
-| Normalización de email (case-insensitive) | `otpThrottle.ts` | **VERIFIED** | "emails se normalizan" |
-| Purga de filas fuera de ventana | `otpThrottle.ts` | **VERIFIED** | "filas fuera de ventana se purgan y no cuentan" |
-| Rate limit de subidas de CV (candidato 10/día, org 50/día) | `src/convex/lib/limits.ts` + `candidates.ts` / `applications.ts` | **VERIFIED** | `tests/static/api_surface.test.ts` + `tests/integration/gates.integration.test.ts` |
-| Rate limit de creación de vacantes / invitaciones / decisiones / notas | `lib/limits.ts` | **VERIFIED** | `api_surface.test.ts` ("decide y addNote ENFORZAN su límite") |
-| Cap de intentos de extracción IA por documento (3) | `candidates.ts` / `applications.ts` | **VERIFIED** | "ambos pipelines capan los intentos de IA por documento" |
-| Límite de organizaciones por usuario y día (5) | `orgs.create` | **VERIFIED** | integración |
-
-**Lo que esto NO cubre:** una sola IP puede pedir OTP a 5.000 emails distintos.
-El límite por email se salta rotando el destinatario; el tope global de 200/hora
-lo mitiga, pero con un solo atacante vería atacados 200 buzones por hora.
+> **ESTADO: BLOCKED BY PLATFORM — con evidencia experimental, no con suposiciones.**
+> Verificado en esta sesión que la IP **sí es confiable** en el edge de Convex
+> (el `X-Forwarded-For` inyectado por el cliente es **descartado**), pero que
+> **el camino del OTP no pasa por ninguna ruta HTTP propia**, por lo que esa IP
+> no es alcanzable desde el código de la aplicación.
 
 ---
 
-## 2. Por qué NO se puede hacer rate limiting por IP dentro de Convex (V1)
+## 1. Investigación ejecutada (no asumida)
 
-Limitación técnica, comprobada sobre el runtime real:
+### 1.1 ¿De dónde sale la IP?
 
-1. **`ctx` no expone la IP del cliente.** Ni `QueryCtx`, ni `MutationCtx`, ni
-   `ActionCtx` ofrecen `request.ip`, `x-forwarded-for` ni equivalente. No hay
-   ninguna API para leerla desde una `mutation` o `action`.
-2. **Las rutas de autenticación no son código de la aplicación.** El login por
-   OTP se resuelve en el runtime de Convex Auth (`/api/auth/*`), fuera de
-   `src/convex/`. No hay hook público para inyectar un contador por IP.
-3. **Un contador en memoria del proceso no sirve.** Las actions se ejecutan en
-   un runtime distribuido y efímero: cada instancia tiene su memoria y no
-   comparten estado. Un atacante que barra las instancias multiplica el límite
-   por el número de instancias. Esto está explícitamente descartado por el
-   gate ("no usar memoria local del proceso como rate limiter distribuido").
-4. **Falsificar la IP desde el cliente no es aceptable.** Aceptar la IP como
-   argumento, o confiar en un header sin `trusted proxy` configurado, convierte
-   el control en teatro: el atacante manda `X-Forwarded-For` y limpia el
-   contador. Descartado por el gate.
+Se implantó temporalmente una `httpAction` que devuelve los headers de IP y se
+llamó dos veces: una limpia y otra con cabeceras inyectadas por el cliente.
 
-Conclusión: **cualquier "solución" dentro de la aplicación sería cosmética.**
-Se declara el hueco en lugar de simularlo.
+```
+Llamada limpia:   xff=170.9.60.163   cf-connecting-ip=170.9.60.163
+                  x-real-ip=null  forwarded=null  x-client-ip=null
+
+Llamada con cabeceras inyectadas por el cliente:
+                  x-forwarded-for: 9.9.9.9, 8.8.8.8
+                  x-real-ip:       7.7.7.7
+                  x-client-ip:     6.6.6.6
+                  forwarded:       for=5.5.5.5
+
+IP_REPORT {"headersPresentes":{"xff":true,"cfConnectingIp":true,"xRealIp":false,"forwarded":false,"xClientIp":false},
+           "spoofAceptado":false,
+           "xffCambiaConHeaderInyectado":false,
+           "veredicto":"NOT_SPOOFABLE"}
+```
+
+**Conclusión 1: la IP del edge es REAL y NO falsificable.** El edge de Convex
+sobrescribe `x-forwarded-for` y `cf-connecting-ip` con la IP del cliente; el
+valor inyectado no llega al origen. Un rate limiter por IP **sería fiable** en
+este entorno, siempre que lea esos headers y no confíe en `x-real-ip`/`forwarded`
+(no presentes).
+
+### 1.2 ¿Por qué no se puede aplicar aquí?
+
+Las rutas HTTP registradas por Convex Auth en el deployment son:
+
+```
+/.well-known/openid-configuration   GET
+/.well-known/jwks.json              GET
+/oauth/authorize                    GET
+/api/auth/signin/*                   GET   (OAuth)
+/api/auth/callback/*                GET/POST (OAuth)
+```
+
+**No hay ruta HTTP de envío de OTP.** El login por email-OTP es la **action**
+`auth.signIn`, invocada por el cliente a través del endpoint de sincronía de
+Convex (`POST /api/query` en `*.convex.cloud`). Esa request **no atraviesa
+nuestro `httpRouter`** y su action context **no expone la IP**.
+
+### 1.3 Las tres razones por las que no se puede cerrar aquí
+
+| # | Razón | Evidencia |
+|---|---|---|
+| 1 | `QueryCtx` / `MutationCtx` / `ActionCtx` no exponen IP ni headers | `otpThrottle.ts` lo documenta; ninguna API del SDK lo ofrece |
+| 2 | El envío de OTP ocurre en una action sobre `/api/query`, fuera de nuestro router | `grep` de las rutas de Convex Auth (arriba) |
+| 3 | Una `httpAction` solo puede proteger rutas **que registremos nosotros**; no puede interponerse delante de `/api/query` | Convex no ofrece proxy inverso a nivel de deployment |
+
+**Descartado explícitamente por ser falsa seguridad:**
+
+- ❌ `X-Forwarded-For` en la app: aunque aquí sea confiable, **no llega** a la
+  action del OTP. Y en otro entorno sin trusted proxy sería falsificable.
+- ❌ `userId` como identificador pre-auth: el atacante aún no está autenticado.
+- ❌ email como único identificador: se evade rotando el destinatario (por eso ya
+  existe un tope global).
+- ❌ `Map`/memoria del proceso: no es un rate limiter distribuido.
+- ❌ Una action "guard" a la que el frontend llame antes de enviar: el atacante la
+  ignora; sería teatro.
 
 ---
 
-## 3. Arquitectura recomendada
+## 2. Lo que SÍ está implementado y verificado
+
+| Control | Dónde | Evidencia |
+|---|---|---|
+| 5 envíos OTP/email/hora | `auth/otpThrottle.ts` | `tests/unit/security.test.ts` (6 tests del throttle) |
+| Tope global 200 OTP/hora (corta la rotación de emails) | `OTP_GLOBAL_HOURLY_CAP` | "el backstop global corta la rotación de emails" |
+| Normalización de email | `otpThrottle.ts` | "emails se normalizan (case-insensitive)" |
+| Purga de filas fuera de ventana | `otpThrottle.ts` | "filas fuera de ventana se purgan y no cuentan" |
+| Verificación OTP: 10 intentos fallidos/hora | Convex Auth (`authRateLimits`) | configuración del provider |
+| 10 CVs/día por candidato, 50/día por organización | `lib/limits.ts` | `gates.integration.test.ts` |
+| 20 vacantes/día, 20 invitaciones/día, 100 decisiones/día, 100 notas/día | `lib/limits.ts` | `api_surface.test.ts` |
+| Cap de 3 intentos de extracción IA por CV | `candidates.ts`, `applications.ts` | "ambos pipelines capan los intentos de IA" |
+| 5 organizaciones/día por usuario | `orgs.create` | integración |
+
+---
+
+## 3. Arquitectura requerida (reproducible)
 
 ```
 Internet
    │
    ▼
-┌────────────────────────────────────────────────────────────┐
-│ Edge / CDN / WAF  ← AQUÍ DEBE VIVIR EL rate limiting       │
-│  · IP real (sólo de confianza, no de un header del cliente) │
-│  · rate limiting distribuido (token bucket / sliding win.)  │
-│  · bot management + challenge (Turnstile / WAF managed)    │
-└───────────────┬────────────────────────────────────────────┘
-                │  (el resto de headers NO se reenvían como IP)
+┌───────────────────────────────────────────────────────────────┐
+│ EDGE / WAF / CDN   ← el ÚNICO sitio válido para el límite IP  │
+│  · IP real: cf-connecting-ip (probado no falsificable)         │
+│  · estado compartido (Redis/KV), NO memoria de instancia      │
+│  · 429 + Retry-After uniforme (sin enumeración de emails)      │
+└───────────────┬───────────────────────────────────────────────┘
+                │  proteja specifically:
+                │  · *.convex.cloud/api/*   (sync: signIn, queries, mutations)
+                │  · *.convex.site/api/auth/*
+                │  · *.convex.site/storage/*
                 ▼
-        Aplicación / Convex
-                │
+        Aplicación Convex
+                │  rate limit por IDENTIDAD (ya implementado y verificado)
                 ▼
-          Convex Auth (OTP)
+        Proveedor de email (OTP)
 ```
 
-### 3.1 Punto exacto de implementación
+### 3.1 Puntos exactos a proteger
 
-| Superficie a proteger | Regla propuesta |
+| Superficie | Regla propuesta |
 |---|---|
-| `POST /api/auth/*` (OTP send, verify) | 20 req/min por IP · 200 req/día por IP · 5 OTP/email/hora (ya implementado) |
-| Inicio de subida (`initUpload`) | 30 req/hora por sesión autenticada (ya implementado por usuario) |
-| Descarga de binarios de storage | URLs firmadas de vida corta + límite por sesión |
-| API pública de Convex (`/api/query`, `/api/mutation`) | 600 req/min por IP con respuesta 429 + `Retry-After` |
+| `POST *.convex.cloud/api/mutation`, `/api/action`, `/api/query` | 600 req/min/IP · 60 req/min por sesión autenticada |
+| `*.convex.site/api/auth/*` | 20 req/min/IP · 200 req/día/IP |
+| `*.convex.site/storage/*` | 300 req/min/IP |
+| Sincronización WebSocket | 10 conexiones/IP · 200 mensajes/min |
 
 ### 3.2 Configuración necesaria
 
-- **Confiar la IP del edge.** El edge debe inyectar la IP real en un header
-  *firmado* o en un claim de JWT verificado; la aplicación NO debe leer
-  `X-Forwarded-For` directamente. Si el edge no está, la IP no es fiable y el
-  control no debe desplegarse.
-- **Almacén compartido de contadores.** Redis/KeyDB (o el servicio de rate
-  limiting del CDN) para que todas las instancias compartan el estado.
-- **Respuesta 429 uniforme** con `Retry-After`, sin revelar si el email existe
-  (anti enumeración).
-- **Allowlist de rangos legítimos**, para no castigar a IPs corporativas o de
-  proveedores de correo al cruzar límites.
+1. **CDN/WAF delante del deployment** (Cloudflare, Vercel Edge, AWS WAF, Fastly).
+2. Política de rate limiting **por IP**, con estado compartido.
+3. Respuesta **429 uniforme** con `Retry-After`; nunca distingue "email no existe"
+   de "email limitado" (anti enumeración).
+4. Allowlist para rangos corporativos legítimos.
+5. Logs de 429 retenidos para auditoría.
 
-### 3.3 Test requerido para cerrar el gate
+### 3.3 Tests de contrato (ejecutables en cuanto exista el edge)
 
-| # | Test | Resultado esperado |
+Implementados como especificación en `tests/edge/rateLimit.contract.test.ts`
+(saltan con `NOT EXECUTED` mientras no haya edge):
+
+| # | Ataque | Resultado esperado |
 |---|---|---|
-| B-1 | N IPs distintas × 5 OTP cada una al **mismo** email | 429 a partir de la 6.ª (control por email) |
-| B-2 | 1 IP × 201 OTP a emails distintos | 429 en la 201.ª (tope global) |
-| B-3 | 1 IP × 25 POST a `/api/auth/*` en 1 min | 429 a partir de la 21.ª |
-| B-4 | `X-Forwarded-For` falsificado | **NO** evade el límite (la IP del edge manda) |
-| B-5 | Legítimo: 1 IP × 10 OTP | 200 en todas; sin falsos positivos |
-| B-6 | Rotación de `Authorization` con el mismo token | 429 / 401 (sin bypass) |
-| B-7 | Dos regiones con la misma IP detrás de NAT corporativo | comportamiento documentado y aceptable |
+| E-1 | 5 IPs distintas × 5 OTP al mismo email | 429 a partir de la 6.ª (control por email) |
+| E-2 | 1 IP × 201 OTP a emails distintos | 429 en la 201.ª (tope global) |
+| E-3 | 1 IP × 25 POST `/api/auth/*` en 1 min | 429 a partir de la 21.ª |
+| E-4 | `X-Forwarded-For: 1.2.3.4` falsificado | **NO** evade el límite |
+| E-5 | Legítimo: 1 IP × 10 OTP | 200 en todos, sin falsos positivos |
+| E-6 | Rotación de `Authorization` con el mismo token | 429/401, sin bypass |
+| E-7 | Dos regiones detrás de la misma IP (NAT corporativo) | comportamiento documentado y aceptable |
 
-### 3.4 Criterio de aceptación
+### 3.4 Checklist de despliegue
 
-El gate B pasa a **VERIFIED** cuando los 7 tests anteriores se ejecutan contra
-el deployment con el edge desplegado y **pasan**, con evidencia del log de 429.
-Hasta entonces el estado es **PARTIAL**: hay límites por identidad, no por red.
+- [ ] CDN/WAF creado y apuntando al deployment
+- [ ] Reglas de rate limiting por IP aplicadas a las 4 superficies
+- [ ] Estado compartido configurado (no in-memory)
+- [ ] 429 con `Retry-After` verificado
+- [ ] E-1…E-7 ejecutados y en verde
+- [ ] Log de 429 habilitado y retenido
+- [ ] `tests/edge/rateLimit.contract.test.ts` sin `skip`
+- [ ] `docs/SECURITY_AUDIT.md` actualizado a VERIFIED
+
+### 3.5 Mecanismo de verificación
+
+```bash
+EDGE_BASE_URL=https://<tu-waf>/  bunx vitest run tests/edge/rateLimit.contract.test.ts
+```
+
+Si `EDGE_BASE_URL` no está definido, el archivo reporta
+`PRE-AUTH ABUSE = NOT EXECUTED (no edge)` y **falla**, de modo que no se pueda
+declarar cerrado por descuido.
 
 ---
 
-## 4. Endurecimientos ya aplicados dentro de la aplicación
+## 4. Veredicto
 
-Como defensa en profundidad (no sustituyen al control por IP):
+**PRE-AUTH ABUSE = BLOCKED BY PLATFORM.**
 
-- **Tope global horario de OTP** (`OTP_GLOBAL_HOURLY_CAP = 200`) — corta la
-  rotación de emails aunque cada uno reciba solo 1.
-- **Token de un solo uso y ventana de 15 min** gestionados por Convex Auth
-  (fuerza bruta de 6 dígitos inviable dentro de la ventana).
-- **Identificadores opacos**: ningún endpoint devuelve si un email existe.
-- **Rate limits por identidad** en todas las operaciones con efecto o coste.
-- **Cap de intentos de IA por documento**: un CV no puede provocar 3 llamadas
-  al LLM; acota el coste por abuso.
+- La IP confiable **existe** y está probada.
+- El punto donde hace falta **no es código de la aplicación**.
+- La mitigación vive en el edge y requiere una decisión de infraestructura
+  (Cloudflare/Vercel/AWS WAF) que no puede ejecutarse desde este repositorio.
 
-## 5. Qué haría falta para cambiar el veredicto
-
-1. Desplegar CDN/WAF delante del deployment (Cloudflare, Vercel Edge, AWS WAF).
-2. Definir la política de trusted-proxy y firmarla.
-3. Ejecutar B-1…B-7 y adjuntar la evidencia.
-4. Actualizar `docs/SECURITY_AUDIT.md` (§ Status Matrix) a `VERIFIED`.
-
-Sin estos tres puntos, cualquier afirmación de "rate limiting por IP activo"
-sería falsa y este documento lo declara.
+Mientras tanto, la exposición real está acotada por los límites por identidad
+ya verificados y por el tope global de 200 OTP/hora.

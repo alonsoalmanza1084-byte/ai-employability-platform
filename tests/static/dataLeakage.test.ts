@@ -48,6 +48,10 @@ const SECRET_LITERALS = [
   /-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----/,
   /eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/,
   /xox[baprs]-[A-Za-z0-9-]{10,}/,
+  // Credenciales de servicios de plataforma con prefijo fijo (hallazgo #5:
+  // la clave del servicio de correo estaba escrita como literal en el repo).
+  /\bfb_[A-Za-z0-9]{16,}/,
+  /\bglpat-[A-Za-z0-9_-]{16,}/,
 ];
 
 /** PII que nunca debe aparecer como literal en el código ni en los fixtures. */
@@ -63,6 +67,26 @@ const PII_LITERALS = [
         expect(re.test(code), `secreto literal (${re}) en ${f}`).toBe(false);
       }
     }
+  });
+
+  it("ninguna cabecera de autenticación lleva un valor literal", () => {
+    const offenders: string[] = [];
+    for (const f of CODE) {
+      const code = readFileSync(f, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/.*$/gm, "");
+      const cab = new RegExp(
+        "[\"'`][A-Za-z0-9-]*(api[-_]?key|authorization|token|secret|x-api-key)[\"'`]\\s*:\\s*[\"'`][^\"'`]{8,}[\"'`]",
+        "gi",
+      );
+      if (cab.test(code)) offenders.push(f + " (cabecera de auth con valor literal)");
+      const asg = new RegExp(
+        "(apiKey|api_key|secretKey|accessToken)\\s*[:=]\\s*[\"'`][^\"'`]{8,}[\"'`]",
+        "g",
+      );
+      if (asg.test(code)) offenders.push(f + " (secreto asignado a variable)");
+    }
+    expect(offenders).toEqual([]);
   });
 
   it("ningún archivo contiene PII real como literal", () => {

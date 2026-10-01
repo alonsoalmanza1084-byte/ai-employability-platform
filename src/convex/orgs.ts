@@ -252,3 +252,110 @@ export const pendingInvites = query({
       .take(ORG_INVITES_PAGE);
   },
 });
+
+/**
+ * Revocar una invitación pendiente (org_admin). Marca `revoked` — aceptarla
+ * después falla (acceptInvite solo acepta status "pending").
+ */
+export const revokeInvite = mutation({
+  args: { organizationId: v.id("organizations"), invitationId: v.id("invitations") },
+  handler: async (ctx, args) => {
+    const { userId } = await requireMembership(ctx, args.organizationId, "org_admin");
+    const inv = await ctx.db.get(args.invitationId);
+    if (!inv || inv.organizationId !== args.organizationId) {
+      throw new Error("NOT_FOUND");
+    }
+    if (inv.status !== "pending") throw new Error("NOT_FOUND");
+    await ctx.db.patch(args.invitationId, { status: "revoked" });
+    await audit(ctx, {
+      actorUserId: userId,
+      organizationId: args.organizationId,
+      action: "org.invite.revoke",
+      targetType: "invitation",
+      targetId: args.invitationId,
+    });
+    return { ok: true };
+  },
+});
+
+/**
+ * Remover un miembro de la organización (org_admin) — camino administrativo
+ * de revocación de acceso (auditoría #3). No es una feature de producto: es
+ * el control de seguridad que cierra el gap "membresías no revocables" de la
+ * auditoría #2. Reglas:
+ *  - targetUserId debe ser miembro ACTUAL de la org (si no → NOT_FOUND).
+ *  - Un org_admin NO puede remover a otro org_admin ni a sí mismo (cierre de
+ *    take-over: impedimos dejar a la org sin admins y evitamos auto-bye).
+ *  - No borra datos del usuario (eso es deleteAccount); solo corta el acceso.
+ */
+export const removeMember = mutation({
+  args: { organizationId: v.id("organizations"), targetUserId: v.id("users") },
+  handler: async (ctx, args) => {
+    const { userId: actorId } = await requireMembership(
+      ctx,
+      args.organizationId,
+      "org_admin",
+    );
+    if (args.targetUserId === actorId) {
+      throw new Error("No puedes removerte a ti mismo de la organización.");
+    }
+    const target = await ctx.db.get(args.targetUserId);
+    if (!target) throw new Error("NOT_FOUND");
+    const membership = await ctx.db
+      .query("organizationMembers")
+      .withIndex("by_org_user", (q) =>
+        q.eq("organizationId", args.organizationId).eq("userId", args.targetUserId),
+      )
+      .first();
+    if (!membership) throw new Error("NOT_FOUND");
+    if (membership.role === "org_admin") {
+      throw new Error(
+        "No puedes remover a otro org_admin; transfiere primero la propiedad.",
+      );
+    }
+    await ctx.db.delete(membership._id);
+    await audit(ctx, {
+      actorUserId: actorId,
+      organizationId: args.organizationId,
+      action: "org.member.remove",
+      targetType: "organizationMember",
+      targetId: membership._id,
+      metadata: { removedRole: membership.role },
+    });
+    return { ok: true };
+  },
+});
+
+/**
+ * Trail de auditoría de la org: SOLO org_admin (server-side, lectura).
+ * El auditLog es inmutable desde el cliente (no hay mutaciones públicas); el
+ * acceso de lectura queda restringido al rol máximo del tenant. Devuelve solo
+ * campos no sensibles (nunca contenido de CVs ni emails completos — regla de
+ * DATABASE.md; metadata ya se escribe acotada). Lectura acotada por página.
+ */
+export const auditTrail = query({
+  args: {
+    organizationId: v.id("organizations"),
+    page: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await requireMembership(ctx, args.organizationId, "org_admin");
+    const PAGE = 100;
+    const page = Math.max(0, Math.floor(args.page ?? 0));
+    const all = await ctx.db
+      .query("auditLog")
+      .withIndex("by_org", (q) => q.eq("organizationId", args.organizationId))
+      .take((page + 1) * PAGE);
+    // Página descendente por creación (más reciente primero).
+    const start = Math.max(0, all.length - PAGE);
+    return all.slice(start).reverse().map((e) => ({
+      _id: e._id,
+      _creationTime: e._creationTime,
+      action: e.action,
+      targetType: e.targetType,
+      targetId: e.targetId,
+      actorUserId: e.actorUserId,
+      metadata: e.metadata,
+    }));
+  },
+});

@@ -56,6 +56,7 @@ export interface EvidenceCheckResult {
   lowConfidenceSkills: number;
   filteredEducation: number;
   filteredCertifications: number;
+  filteredYearsExperience: boolean;
 }
 
 const capAt = (current: number | undefined, cap: number): number =>
@@ -71,6 +72,7 @@ export function verifyExtractionAgainstSource(
   let lowConfidenceSkills = 0;
   let filteredEducation = 0;
   let filteredCertifications = 0;
+  let filteredYearsExperience = false;
 
   const skills = extraction.skills.map((s) => {
     let evidence = s.evidence;
@@ -131,11 +133,42 @@ export function verifyExtractionAgainstSource(
     return verifiable;
   });
 
+  // ── yearsExperience (hardening auditoría #3) ────────────────────────
+  // La experiencia total solo es acreditable si el número aparece en el texto
+  // ("5 años") o si alguna experiencia individual con empresa verificable lo
+  // respalda. Antes, un "tengo 15 años de experiencia" inyectado (sin
+  // aparecer en el CV) pasaba directo al requisito experience_years → +100.
+  const hasVerifiableEmployer = extraction.experience.some(
+    (x) =>
+      appearsIn(x.company, textTokens, normalizedText) ||
+      appearsIn(x.title, textTokens, normalizedText),
+  );
+  let yearsExperience = extraction.yearsExperience;
+  if (
+    yearsExperience !== undefined &&
+    yearsExperience > 0 &&
+    !hasVerifiableEmployer &&
+    !/\b\d+\s*(años|anos|years)\b/i.test(text)
+  ) {
+    // No hay empleador verificable ni mención numérica en el texto: el dato
+    // no puede proceder del documento → se descarta (anti score-inflation).
+    yearsExperience = undefined;
+    filteredYearsExperience = true;
+  }
+
   return {
-    extraction: { ...extraction, skills, experience, education, certifications },
+    extraction: {
+      ...extraction,
+      skills,
+      experience,
+      education,
+      certifications,
+      yearsExperience,
+    },
     droppedEvidence,
     lowConfidenceSkills,
     filteredEducation,
     filteredCertifications,
+    filteredYearsExperience,
   };
 }

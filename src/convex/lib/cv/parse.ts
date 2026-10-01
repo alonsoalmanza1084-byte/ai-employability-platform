@@ -54,6 +54,14 @@ export function detectMime(bytes: Uint8Array): CvMime | null {
  * content streams e interpreta operadores de texto. Nunca ejecuta ni renderiza
  * el archivo (SECURITY.md §5).
  */
+/**
+ * `Buffer` NO existe como global en el runtime de Convex (actions "use node").
+ * Bug real (auditoría #4): usar `Buffer.from(...)` hacía fallar el 100% de las
+ * subidas .txt y .docx con "Buffer is not defined", verificado contra el
+ * deployment real. Se usan las APIs web estándar, que sí existen.
+ */
+const utf8 = new TextDecoder("utf-8", { fatal: false });
+
 async function extractPdfText(bytes: Uint8Array): Promise<string> {
   try {
     return extractPdf(bytes);
@@ -80,10 +88,13 @@ export async function extractText(
   if (mime === "pdf") {
     raw = await extractPdfText(bytes);
   } else if (mime === "docx") {
-    const result = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
+    // `arrayBuffer` en vez de `buffer`: mammoth acepta ambos, pero `buffer`
+    // exige el global `Buffer`, inexistente en Convex.
+    const buf = bytes.slice().buffer;
+    const result = await mammoth.extractRawText({ arrayBuffer: buf });
     raw = result?.value ?? "";
   } else {
-    raw = Buffer.from(bytes).toString("utf8");
+    raw = utf8.decode(bytes);
   }
 
   const text = raw
@@ -100,4 +111,35 @@ export async function extractText(
     );
   }
   return text;
+}
+
+// ── Endurecimiento de mensajes de error (auditoría #4) ────────────────────────
+/**
+ * El `catch` de `ingestCv` persistía el `err.message` crudo en
+ * `resumeVersions.failureReason` / `applications.failureReason`, que es un
+ * campo visible para el usuario. Con eso, un error interno (nombres de módulo,
+ * mensajes del proveedor IA, tipo de excepción) acababa expuesto al cliente:
+ * fuga de información de bajo impacto pero evitable.
+ *
+ * Política fail-closed: solo pasan los mensajes que la propia aplicación
+ * declara seguros. Cualquier otra cosa se traduce a un mensaje genérico; el
+ * detalle técnico queda en `aiExtractions.error` (server-side, truncado).
+ */
+const SAFE_ERROR_MESSAGES = new Set([
+  "Archivo no disponible en storage.",
+  "El contenido del archivo no corresponde a PDF, DOCX o TXT válido.",
+  "El archivo supera el tamaño máximo de 10 MB.",
+  "No pudimos leer texto suficiente de este archivo (¿es un escaneo o una imagen?). Prueba con un PDF/DOCX generado digitalmente.",
+]);
+
+const GENERIC_ERROR_MESSAGE =
+  "No pudimos procesar este archivo. Intenta de nuevo con un PDF, DOCX o TXT generado digitalmente.";
+
+export function toSafeCvErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : "";
+  if (SAFE_ERROR_MESSAGES.has(raw.trim())) return raw.trim();
+  // Los errores de proveedor IA ya son mensajes propios y seguros.
+  if (raw.startsWith("El proveedor de IA no respondió")) return raw;
+  if (raw.startsWith("La IA devolvió un formato inesperado")) return raw;
+  return GENERIC_ERROR_MESSAGE;
 }

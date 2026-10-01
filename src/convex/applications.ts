@@ -17,10 +17,10 @@ import {
   PROMPT_VERSION,
 } from "./lib/ai/prompts";
 import { cvExtractionJsonSchema, cvExtractionSchema } from "./lib/ai/schemas";
-import { detectMime, extractText, MAX_FILE_BYTES } from "./lib/cv/parse";
+import { detectMime, extractText, MAX_FILE_BYTES, toSafeCvErrorMessage } from "./lib/cv/parse";
 
 import { computeMatch, type MatchRequirementInput } from "./lib/matching";
-import { aiExtractionValidator } from "./lib/ai/validators";
+import { aiExtractionValidator, normalizeAiJson } from "./lib/ai/validators";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- ctx loose y tipos de extracción ya validados con zod */
 /**
@@ -269,17 +269,17 @@ export const ingestCv = action({
       }
       const text = await extractText(bytes, mime);
 
-      const provider = (await import("./lib/ai/openai_provider")).getAIProvider();
+      const provider = await (await import("./lib/ai/openai_provider")).getAIProvider();
       const aiResult = await provider.complete(
         {
           task: "cv_extract",
           system: CV_EXTRACT_SYSTEM,
-          userContent: buildCvExtractUserContent(text),
+          userContent: buildCvExtractUserContent(text, cvExtractionJsonSchema),
           maxOutputTokens: 4000,
           temperature: 0,
           responseJsonSchema: cvExtractionJsonSchema,
         },
-        (raw) => cvExtractionSchema.parse(JSON.parse(raw)),
+        (raw) => cvExtractionSchema.parse(normalizeAiJson(JSON.parse(raw))),
       );
 
       await ctx.runMutation(internal.applications.recordExtraction, {
@@ -299,7 +299,9 @@ export const ingestCv = action({
           reason:
             aiResult.error.code === "SCHEMA_INVALID"
               ? "La IA devolvió un formato inesperado. Puedes reintentar."
-              : "El proveedor de IA no respondió correctamente. Reintenta en unos minutos.",
+              : aiResult.error.code === "CONTENT_FILTERED"
+                ? "El contenido del CV fue bloqueado por el filtro de seguridad del proveedor de IA."
+                : "El proveedor de IA no respondió correctamente. Reintenta en unos minutos.",
         });
         return { status: "failed" as const };
       }
@@ -315,8 +317,9 @@ export const ingestCv = action({
 
       return { status: "ready" as const };
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Error desconocido al procesar el CV.";
+      // Nunca persistir el mensaje crudo de una excepción interna (ver
+      // toSafeCvErrorMessage): ese campo es visible para el usuario.
+      const message = toSafeCvErrorMessage(err);
       await ctx.runMutation(internal.applications.markFailed, {
         applicationId: args.applicationId,
         reason: message.slice(0, 300),

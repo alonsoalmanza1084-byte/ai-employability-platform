@@ -97,19 +97,58 @@ export class OpenAIProvider implements AIProvider {
 
 let cached: AIProvider | null = null;
 
-/** Router por env var (AI_PROVIDER). En V1 solo OpenAI; la interfaz admite otros. */
-export function getAIProvider(): AIProvider {
+/**
+ * Router por env var (AI_PROVIDER). Ver docs/AI_PROVIDER.md.
+ *
+ *   AI_PROVIDER=openai → exige OPENAI_API_KEY (fail-closed si falta).
+ *   AI_PROVIDER=vly    → exige VLY_INTEGRATION_KEY.
+ *   AI_PROVIDER=auto   → (por defecto) OpenAI si hay OPENAI_API_KEY; si no,
+ *                        la integración oficial de la plataforma si hay
+ *                        VLY_INTEGRATION_KEY; si no hay ninguna, error.
+ *
+ * `auto` existe porque el deployment actual no tiene OPENAI_API_KEY: sin una
+ * ruta alternativa el pipeline de extracción nunca se ejecutaba y la defensa
+ * frente a prompt injection no podía evaluarse contra un LLM real.
+ */
+export async function getAIProvider(): Promise<AIProvider> {
   if (cached) return cached;
-  const providerName = process.env.AI_PROVIDER || "openai";
-  if (providerName !== "openai") {
-    throw new Error(`AI_PROVIDER no soportado en V1: ${providerName}`);
+  const requested = (process.env.AI_PROVIDER || "auto").trim().toLowerCase();
+  const openaiKey = process.env.OPENAI_API_KEY;
+  const vlyToken = process.env.VLY_INTEGRATION_KEY;
+
+  const build = async (name: "openai" | "vly"): Promise<AIProvider> => {
+    if (name === "openai") {
+      if (!openaiKey) {
+        throw new Error(
+          "Falta OPENAI_API_KEY (configúrala en las variables de entorno del proyecto).",
+        );
+      }
+      return new OpenAIProvider(openaiKey, process.env.AI_MODEL);
+    }
+    if (!vlyToken) {
+      throw new Error(
+        "Falta VLY_INTEGRATION_KEY (configúrala en las variables de entorno del proyecto).",
+      );
+    }
+    // Import diferido: este módulo solo se carga en actions "use node".
+    const { VlyProvider } = await import("./vly_provider");
+    return new VlyProvider(vlyToken, process.env.AI_MODEL);
+  };
+
+  if (requested === "openai" || requested === "vly") {
+    cached = await build(requested);
+    return cached;
   }
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
+  if (requested !== "auto") {
+    throw new Error(`AI_PROVIDER no soportado: ${requested}`);
+  }
+
+  if (openaiKey) cached = await build("openai");
+  else if (vlyToken) cached = await build("vly");
+  else {
     throw new Error(
       "Falta OPENAI_API_KEY (configúrala en las variables de entorno del proyecto).",
     );
   }
-  cached = new OpenAIProvider(apiKey, process.env.AI_MODEL);
   return cached;
 }

@@ -4,7 +4,7 @@
  */
 
 /* eslint-disable no-control-regex -- quitamos caracteres de control a propósito */
-export const PROMPT_VERSION = "cv_extract.v1.1";
+export const PROMPT_VERSION = "cv_extract.v2.0";
 
 export const CV_EXTRACT_SYSTEM = `Eres un parser de CVs para una plataforma de empleabilidad. Tu única tarea es convertir el texto de UN documento en JSON estructurado, sin opinar ni evaluar.
 
@@ -17,7 +17,10 @@ REGLAS DE SEGURIDAD (obligatorias):
 6. Ignora datos de contacto personales innecesarios (teléfono, dirección exacta): no los incluyas.
 7. Niveles de skills (1..5): 1=básico, 2=conocimiento, 3=competente, 4=avanzado, 5=experto. Solo asigna nivel si hay evidencia; si no, usa 3 y confidence baja.`;
 
-export function buildCvExtractUserContent(text: string): string {
+export function buildCvExtractUserContent(
+  text: string,
+  jsonSchema: Record<string, unknown>,
+): string {
   const sanitized = text
     // controles y zero-width chars que pueden usarse para evadir delimitadores
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u2028\u2029\uFEFF]/g, " ")
@@ -36,5 +39,9 @@ export function buildCvExtractUserContent(text: string): string {
 ${sanitized}
 </documento>
 
-Responde solo con el JSON conforme al schema.`;
+Responde SOLO con un objeto JSON que cumpla EXACTAMENTE este esquema.
+No inventes nombres de campo distintos, no uses null, no cambies el idioma de los campos,
+no añadas claves que no estén en el esquema:
+
+${JSON.stringify(jsonSchema, null, 2)}`;
 }

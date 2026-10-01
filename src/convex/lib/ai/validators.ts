@@ -12,6 +12,29 @@
  */
 import { v } from "convex/values";
 
+/**
+ * Normaliza la salida cruda del LLM antes de validarla con zod (auditoría #4).
+ *
+ * El error observado contra un LLM real: los modelos expresan "sin dato" como
+ * `null` (`"end": null`, `"headline": null`), y los esquemas con `.optional()`
+ * rechazan `null`. Resultado: `SCHEMA_INVALID` y, con temperatura 0 en el
+ * reintento, un fallo determinista que dejaba TODA extracción en `failed`.
+ *
+ * Esta función SOLO elimina claves cuyo valor es `null` (semánticamente
+ * "ausente" = `undefined`). No coerce, no rellena, no suaviza ninguna
+ * restricción: la validación zod posterior sigue siendo estricta y fail-closed.
+ */
+export function normalizeAiJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeAiJson);
+  if (value === null || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (v === null) continue;
+    out[k] = normalizeAiJson(v);
+  }
+  return out;
+}
+
 export const aiSkillValidator = v.object({
   name: v.string(),
   level: v.number(),

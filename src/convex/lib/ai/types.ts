@@ -4,7 +4,9 @@ export type AIErrorCode =
   | "RATE_LIMITED"
   | "SCHEMA_INVALID"
   | "PROVIDER_ERROR"
-  | "TIMEOUT";
+  | "TIMEOUT"
+  /** El proveedor rechazó la petición por su filtro de contenido (auditoría #4). */
+  | "CONTENT_FILTERED";
 
 export interface AIRequest {
   task: "cv_extract";

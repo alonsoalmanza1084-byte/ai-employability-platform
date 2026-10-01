@@ -30,12 +30,13 @@ import {
   PROMPT_VERSION,
 } from "./lib/ai/prompts";
 import { cvExtractionJsonSchema, cvExtractionSchema } from "./lib/ai/schemas";
+import { normalizeAiJson } from "./lib/ai/validators";
 import { verifyExtractionAgainstSource } from "./lib/ai/evidence";
 import {
   aiExtractionValidator,
   diagnosisValidator,
 } from "./lib/ai/validators";
-import { detectMime, extractText, MAX_FILE_BYTES } from "./lib/cv/parse";
+import { detectMime, extractText, MAX_FILE_BYTES, toSafeCvErrorMessage } from "./lib/cv/parse";
 
 /** Perfil del usuario autenticado (o null si aún no tiene). */
 export const myProfile = query({
@@ -265,20 +266,17 @@ export const ingestCv = action({
       const text = await extractText(bytes, mime);
 
       // 3. IA: extracción con salida validada por schema estricto.
-      const provider = (await import("./lib/ai/openai_provider")).getAIProvider();
+      const provider = await (await import("./lib/ai/openai_provider")).getAIProvider();
       const aiResult = await provider.complete(
         {
           task: "cv_extract",
           system: CV_EXTRACT_SYSTEM,
-          userContent: buildCvExtractUserContent(text),
+          userContent: buildCvExtractUserContent(text, cvExtractionJsonSchema),
           maxOutputTokens: 4000,
           temperature: 0,
           responseJsonSchema: cvExtractionJsonSchema,
         },
-        (raw) => {
-          const json = JSON.parse(raw);
-          return cvExtractionSchema.parse(json);
-        },
+        (raw) => cvExtractionSchema.parse(normalizeAiJson(JSON.parse(raw))),
       );
 
       if (!aiResult.ok) {
@@ -287,7 +285,9 @@ export const ingestCv = action({
           reason:
             aiResult.error.code === "SCHEMA_INVALID"
               ? "La IA devolvió un formato inesperado. Puedes reintentar."
-              : "El proveedor de IA no respondió correctamente. Reintenta en unos minutos.",
+              : aiResult.error.code === "CONTENT_FILTERED"
+                ? "El contenido del CV fue bloqueado por el filtro de seguridad del proveedor de IA."
+                : "El proveedor de IA no respondió correctamente. Reintenta en unos minutos.",
         });
         return { status: "failed" as const };
       }
@@ -332,8 +332,9 @@ export const ingestCv = action({
       void startedAt;
       return { status: "ready" as const };
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Error desconocido al procesar el CV.";
+      // Nunca persistir el mensaje crudo de una excepción interna (ver
+      // toSafeCvErrorMessage): ese campo es visible para el usuario.
+      const message = toSafeCvErrorMessage(err);
       await ctx.runMutation(internal.candidates.markFailed, {
         resumeVersionId: args.resumeVersionId,
         reason: message.slice(0, 300),

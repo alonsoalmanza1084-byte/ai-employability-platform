@@ -4,7 +4,7 @@
  */
 
 /* eslint-disable no-control-regex -- quitamos caracteres de control a propósito */
-export const PROMPT_VERSION = "cv_extract.v1";
+export const PROMPT_VERSION = "cv_extract.v1.1";
 
 export const CV_EXTRACT_SYSTEM = `Eres un parser de CVs para una plataforma de empleabilidad. Tu única tarea es convertir el texto de UN documento en JSON estructurado, sin opinar ni evaluar.
 
@@ -22,6 +22,10 @@ export function buildCvExtractUserContent(text: string): string {
     // controles y zero-width chars que pueden usarse para evadir delimitadores
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u2028\u2029\uFEFF]/g, " ")
     .replace(/<\/?\s*documento\s*>/gi, " ")
+    // Neutraliza HTML/JS embebido (el modelo recibe texto plano, nunca marcas):
+    // tras limpiar los delimitadores, ningún <tag> sobrevive como tal.
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 24_000);

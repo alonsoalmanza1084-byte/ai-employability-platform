@@ -147,13 +147,17 @@ export function computeMatch(
   const experience = avg(expScores.map((r) => r.score));
   const education = avg(eduScores.map((r) => r.score));
 
-  // overall = promedio ponderado por weight de cada requisito
-  const totalWeight = requirements.reduce((s, r) => s + Math.max(r.weight, 0), 0);
+  // overall = promedio ponderado por weight de cada requisito.
+  // Defensa en profundidad: los pesos se clampean a [0,1] aquí aunque
+  // jobs.create ya valide 0.1–1 (ningún dato del cliente puede desbalancear
+  // el score ni restar puntos).
+  const clampWeight = (w: number) => Math.max(0, Math.min(1, w));
+  const totalWeight = requirements.reduce((s, r) => s + clampWeight(r.weight), 0);
   let weighted = 0;
   if (totalWeight > 0) {
     for (const r of results) {
       const req = requirements.find((q) => q.id === r.requirementId);
-      if (req) weighted += r.score * req.weight;
+      if (req) weighted += r.score * clampWeight(req.weight);
     }
     weighted = Math.round(weighted / totalWeight);
   } else {

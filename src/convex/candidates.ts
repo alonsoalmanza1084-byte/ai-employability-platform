@@ -1,13 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- ctx loose y tipos de extracción ya validados con zod */
 import { v } from "convex/values";
-import { action, mutation, query } from "./_generated/server";
+import {
+  action,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
 import {
   skillValidator,
   experienceValidator,
   educationValidator,
   certificationValidator,
 } from "./schema";
-import { api } from "./_generated/api";
+import { internal } from "./_generated/api";
 import { requireSelf } from "./lib/rbac";
 import {
   audit,
@@ -24,6 +30,7 @@ import {
   PROMPT_VERSION,
 } from "./lib/ai/prompts";
 import { cvExtractionJsonSchema, cvExtractionSchema } from "./lib/ai/schemas";
+import { verifyExtractionAgainstSource } from "./lib/ai/evidence";
 import { detectMime, extractText, MAX_FILE_BYTES } from "./lib/cv/parse";
 
 /** Perfil del usuario autenticado (o null si aún no tiene). */
@@ -126,6 +133,12 @@ export const finalizeUpload = mutation({
   handler: async (ctx, args) => {
     const user = await requireUser(ctx);
 
+    // Re-verificación en finalize (el cliente podría enviar otro fileName que en init).
+    if (!/\.(pdf|docx|txt)$/i.test(args.fileName)) {
+      await ctx.storage.delete(args.storageId);
+      throw new Error("Formato no permitido. Usa PDF, DOCX o TXT.");
+    }
+
     const storageMeta = await ctx.db.system.get(args.storageId);
     if (!storageMeta) throw new Error("Archivo no encontrado en storage.");
     if ((storageMeta as any).size > MAX_FILE_BYTES) {
@@ -164,7 +177,7 @@ export const finalizeUpload = mutation({
       resumeId: resume!._id,
       userId: user._id,
       version,
-      fileName: args.fileName.slice(0, 120),
+      fileName: args.fileName.replace(/[\\/]/g, "_").slice(0, 120),
       fileSize: (storageMeta as any).size ?? args.fileSize,
       mimeType: args.mimeType.slice(0, 60),
       storageId: args.storageId,
@@ -200,13 +213,28 @@ export const ingestCv = action({
     const userId = await requireSelf(ctx);
 
     // El action verifica estado y marca "processing" (mutation transaccional).
-    const rv: any = await ctx.runQuery(api.candidates.getVersionForIngest, {
+    const rv: any = await ctx.runQuery(internal.candidates.getVersionForIngest, {
       resumeVersionId: args.resumeVersionId,
     });
     if (!rv || rv.userId !== userId) throw new Error("NOT_FOUND");
     if (rv.status === "processing") return { status: "processing" as const };
+    if (rv.status === "ready") return { status: "ready" as const };
 
-    await ctx.runMutation(api.candidates.markProcessing, {
+    // Cap de intentos de extracción (anti abuso de tokens IA): máx 3 por versión.
+    const attempts: any[] = await ctx.runQuery(
+      internal.candidates.countExtractionAttempts,
+      { resumeVersionId: args.resumeVersionId },
+    );
+    if (attempts.length >= 3) {
+      await ctx.runMutation(internal.candidates.markFailed, {
+        resumeVersionId: args.resumeVersionId,
+        reason:
+          "Demasiados intentos de análisis para este CV. Contacta a soporte si necesitas reintentar.",
+      });
+      return { status: "failed" as const };
+    }
+
+    await ctx.runMutation(internal.candidates.markProcessing, {
       resumeVersionId: args.resumeVersionId,
     });
 
@@ -244,7 +272,7 @@ export const ingestCv = action({
       );
 
       if (!aiResult.ok) {
-        await ctx.runMutation(api.candidates.markFailed, {
+        await ctx.runMutation(internal.candidates.markFailed, {
           resumeVersionId: args.resumeVersionId,
           reason:
             aiResult.error.code === "SCHEMA_INVALID"
@@ -254,7 +282,7 @@ export const ingestCv = action({
         return { status: "failed" as const };
       }
 
-      await ctx.runMutation(api.candidates.recordExtraction, {
+      await ctx.runMutation(internal.candidates.recordExtraction, {
         resumeVersionId: args.resumeVersionId,
         ok: aiResult.ok,
         model: aiResult.model,
@@ -265,7 +293,9 @@ export const ingestCv = action({
       });
 
       // 4. Escribir resultados + diagnóstico determinista (transaccional).
-      const extracted = aiResult.data;
+      // Post-check de evidencia (AI_SECURITY §6): evidencia no verificable
+      // contra el texto real del CV se descarta (anti alucinación/inyección).
+      const extracted = verifyExtractionAgainstSource(text, aiResult.data).extraction;
       const profileData: ProfileData = {
         fullName: extracted.fullName,
         headline: extracted.headline,
@@ -282,7 +312,7 @@ export const ingestCv = action({
       };
       const diagnosis = computeDiagnosis(profileData);
 
-      await ctx.runMutation(api.candidates.applyExtraction, {
+      await ctx.runMutation(internal.candidates.applyExtraction, {
         resumeVersionId: args.resumeVersionId,
         extractedText: text,
         extraction: extracted,
@@ -294,7 +324,7 @@ export const ingestCv = action({
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Error desconocido al procesar el CV.";
-      await ctx.runMutation(api.candidates.markFailed, {
+      await ctx.runMutation(internal.candidates.markFailed, {
         resumeVersionId: args.resumeVersionId,
         reason: message.slice(0, 300),
       });
@@ -303,8 +333,11 @@ export const ingestCv = action({
   },
 });
 
-/** Lectura interna para el action (verifica ownership). */
-export const getVersionForIngest = query({
+/**
+ * Lectura interna para el action (verifica ownership).
+ * INTERNAL: no invocable desde el cliente (audit A-01).
+ */
+export const getVersionForIngest = internalQuery({
   args: { resumeVersionId: v.id("resumeVersions") },
   handler: async (ctx, args) => {
     const userId = await requireSelf(ctx);
@@ -314,7 +347,21 @@ export const getVersionForIngest = query({
   },
 });
 
-export const markProcessing = mutation({
+/** Cuenta intentos de extracción de una versión (cap anti-abuso). INTERNAL. */
+export const countExtractionAttempts = internalQuery({
+  args: { resumeVersionId: v.id("resumeVersions") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("aiExtractions")
+      .withIndex("by_version", (q) =>
+        q.eq("resumeVersionId", args.resumeVersionId),
+      )
+      .collect();
+  },
+});
+
+/** INTERNAL: solo invocable desde actions del servidor. */
+export const markProcessing = internalMutation({
   args: { resumeVersionId: v.id("resumeVersions") },
   handler: async (ctx, args) => {
     const userId = await requireSelf(ctx);
@@ -324,7 +371,7 @@ export const markProcessing = mutation({
   },
 });
 
-export const markFailed = mutation({
+export const markFailed = internalMutation({
   args: { resumeVersionId: v.id("resumeVersions"), reason: v.string() },
   handler: async (ctx, args) => {
     const userId = await requireSelf(ctx);
@@ -332,12 +379,12 @@ export const markFailed = mutation({
     if (!rv || rv.userId !== userId) throw new Error("NOT_FOUND");
     await ctx.db.patch(args.resumeVersionId, {
       status: "failed",
-      failureReason: args.reason,
+      failureReason: args.reason.slice(0, 300),
     });
   },
 });
 
-export const recordExtraction = mutation({
+export const recordExtraction = internalMutation({
   args: {
     resumeVersionId: v.id("resumeVersions"),
     ok: v.boolean(),
@@ -362,8 +409,11 @@ export const recordExtraction = mutation({
   },
 });
 
-/** Aplica la extracción validada: versión ready + perfil + diagnóstico + audit. */
-export const applyExtraction = mutation({
+/**
+ * Aplica la extracción validada: versión ready + perfil + diagnóstico + audit.
+ * INTERNAL: solo el action del pipeline puede invocarla (audit A-01).
+ */
+export const applyExtraction = internalMutation({
   args: {
     resumeVersionId: v.id("resumeVersions"),
     extractedText: v.string(),
@@ -523,10 +573,54 @@ export const updateProfile = mutation({
       }
     }
 
-    const merged = { ...existing, ...args };
-    const diagnosis = computeDiagnosis(merged as ProfileData);
+    // Patch EXPLÍCITO: solo campos permitidos, nunca userId/_id/diagnosis
+    // (protección contra mass assignment; el validador ya filtra desconocidos,
+    // esto es defensa en profundidad) — audit A-03.
+    const patch: {
+      fullName?: string;
+      headline?: string;
+      location?: string;
+      summary?: string;
+      yearsExperience?: number;
+      skills?: { name: string; level: number; source: "ai" | "human"; evidence?: string; confidence?: number }[];
+      experience?: {
+        company: string;
+        title: string;
+        start: string;
+        end?: string;
+        current?: boolean;
+        description: string;
+        achievements: string[];
+        source: "ai" | "human";
+        evidence?: string;
+        confidence?: number;
+      }[];
+      education?: { institution: string; degree: string; field?: string; startYear?: number; endYear?: number; source: "ai" | "human" }[];
+      certifications?: { name: string; issuer?: string; year?: number; source: "ai" | "human" }[];
+      updatedAt: number;
+    } = { updatedAt: Date.now() };
+    if (args.fullName !== undefined) patch.fullName = args.fullName;
+    if (args.headline !== undefined) patch.headline = args.headline;
+    if (args.location !== undefined) patch.location = args.location;
+    if (args.summary !== undefined) patch.summary = args.summary;
+    if (args.yearsExperience !== undefined) patch.yearsExperience = args.yearsExperience;
+    if (args.skills !== undefined) {
+      patch.skills = args.skills.map((s) => ({ ...s, source: "human" as const }));
+    }
+    if (args.experience !== undefined) {
+      patch.experience = args.experience.map((x) => ({ ...x, source: "human" as const }));
+    }
+    if (args.education !== undefined) {
+      patch.education = args.education.map((x) => ({ ...x, source: "human" as const }));
+    }
+    if (args.certifications !== undefined) {
+      patch.certifications = args.certifications.map((c) => ({ ...c, source: "human" as const }));
+    }
 
-    await ctx.db.patch(existing._id, { ...args, diagnosis, updatedAt: Date.now() });
+    const merged = { ...existing, ...patch } as unknown as ProfileData;
+    const diagnosis = computeDiagnosis(merged);
+
+    await ctx.db.patch(existing._id, { ...patch, diagnosis });
     await audit(ctx, {
       actorUserId: userId,
       action: "profile.update",

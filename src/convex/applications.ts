@@ -1,9 +1,16 @@
 import { v } from "convex/values";
-import { action, mutation, query } from "./_generated/server";
-import { api } from "./_generated/api";
+import {
+  action,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
+import { internal } from "./_generated/api";
 import { requireMembership } from "./lib/rbac";
 import { audit, countUsage, recordUsage } from "./lib/audit";
 import { DAY_MS, LIMITS } from "./lib/limits";
+import { verifyExtractionAgainstSource } from "./lib/ai/evidence";
 import {
   buildCvExtractUserContent,
   CV_EXTRACT_SYSTEM,
@@ -74,6 +81,12 @@ export const finalizeUpload = mutation({
       throw new Error("El nombre del candidato debe tener entre 1 y 100 caracteres.");
     }
 
+    // Re-verificación en finalize (el cliente podría enviar otro fileName que en init).
+    if (!/\.(pdf|docx|txt)$/i.test(args.fileName)) {
+      await ctx.storage.delete(args.storageId);
+      throw new Error("Formato no permitido. Usa PDF, DOCX o TXT.");
+    }
+
     const storageMeta = await ctx.db.system.get(args.storageId);
     if (!storageMeta) throw new Error("Archivo no encontrado en storage.");
     if ((storageMeta as any).size > MAX_FILE_BYTES) {
@@ -87,7 +100,7 @@ export const finalizeUpload = mutation({
       source: "recruiter_upload",
       status: "pending",
       fullName: name,
-      fileName: args.fileName.slice(0, 120),
+      fileName: args.fileName.replace(/[\\/]/g, "_").slice(0, 120),
       fileSize: (storageMeta as any).size ?? args.fileSize,
       mimeType: args.fileName.toLowerCase().endsWith(".pdf")
         ? "application/pdf"
@@ -117,8 +130,11 @@ export const finalizeUpload = mutation({
   },
 });
 
-/** Lectura interna para el action de ingest (verifica membresía). */
-export const getForIngest = query({
+/**
+ * Lectura interna para el action de ingest (verifica membresía).
+ * INTERNAL: no invocable desde el cliente (audit A-01/A-02).
+ */
+export const getForIngest = internalQuery({
   args: { applicationId: v.id("applications") },
   handler: async (ctx, args) => {
     const application = await ctx.db.get(args.applicationId);
@@ -128,7 +144,8 @@ export const getForIngest = query({
   },
 });
 
-export const markProcessing = mutation({
+/** INTERNAL: solo el action del pipeline puede invocarla. */
+export const markProcessing = internalMutation({
   args: { applicationId: v.id("applications") },
   handler: async (ctx, args) => {
     const application = await ctx.db.get(args.applicationId);
@@ -138,7 +155,21 @@ export const markProcessing = mutation({
   },
 });
 
-export const markFailed = mutation({
+/** Cuenta intentos de extracción de una aplicación (cap anti-abuso). INTERNAL. */
+export const countExtractionAttempts = internalQuery({
+  args: { applicationId: v.id("applications") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("aiExtractions")
+      .withIndex("by_application", (q) =>
+        q.eq("applicationId", args.applicationId),
+      )
+      .collect();
+  },
+});
+
+/** INTERNAL: solo el action del pipeline puede invocarla. */
+export const markFailed = internalMutation({
   args: { applicationId: v.id("applications"), reason: v.string() },
   handler: async (ctx, args) => {
     const application = await ctx.db.get(args.applicationId);
@@ -146,12 +177,13 @@ export const markFailed = mutation({
     await requireMembership(ctx, application.organizationId, "recruiter");
     await ctx.db.patch(args.applicationId, {
       extractStatus: "failed",
-      failureReason: args.reason,
+      failureReason: args.reason.slice(0, 300),
     });
   },
 });
 
-export const recordExtraction = mutation({
+/** INTERNAL: solo el action del pipeline puede invocarla. */
+export const recordExtraction = internalMutation({
   args: {
     applicationId: v.id("applications"),
     ok: v.boolean(),
@@ -184,9 +216,10 @@ export const ingestCv = action({
   args: { applicationId: v.id("applications") },
   handler: async (ctx, args) => {
     // El actor debe ser recruiter de la org dueña de la application.
-    const application: any = await ctx.runQuery(api.applications.getForIngest, {
-      applicationId: args.applicationId,
-    });
+    const application: any = await ctx.runQuery(
+      internal.applications.getForIngest,
+      { applicationId: args.applicationId },
+    );
     if (!application) throw new Error("NOT_FOUND");
     if (application.extractStatus === "processing") {
       return { status: "processing" as const };
@@ -195,7 +228,21 @@ export const ingestCv = action({
       return { status: "ready" as const };
     }
 
-    await ctx.runMutation(api.applications.markProcessing, {
+    // Cap de intentos de extracción (anti abuso de tokens IA): máx 3 por CV.
+    const attempts: any[] = await ctx.runQuery(
+      internal.applications.countExtractionAttempts,
+      { applicationId: args.applicationId },
+    );
+    if (attempts.length >= 3) {
+      await ctx.runMutation(internal.applications.markFailed, {
+        applicationId: args.applicationId,
+        reason:
+          "Demasiados intentos de análisis para este CV. Contacta a soporte si necesitas reintentar.",
+      });
+      return { status: "failed" as const };
+    }
+
+    await ctx.runMutation(internal.applications.markProcessing, {
       applicationId: args.applicationId,
     });
 
@@ -225,7 +272,7 @@ export const ingestCv = action({
         (raw) => cvExtractionSchema.parse(JSON.parse(raw)),
       );
 
-      await ctx.runMutation(api.applications.recordExtraction, {
+      await ctx.runMutation(internal.applications.recordExtraction, {
         applicationId: args.applicationId,
         ok: aiResult.ok,
         model: aiResult.model,
@@ -233,11 +280,11 @@ export const ingestCv = action({
         inputTokens: aiResult.usage?.inputTokens ?? 0,
         outputTokens: aiResult.usage?.outputTokens ?? 0,
         durationMs: aiResult.durationMs,
-        error: aiResult.ok ? undefined : aiResult.error.message,
+        error: aiResult.ok ? undefined : aiResult.error.message.slice(0, 200),
       });
 
       if (!aiResult.ok) {
-        await ctx.runMutation(api.applications.markFailed, {
+        await ctx.runMutation(internal.applications.markFailed, {
           applicationId: args.applicationId,
           reason:
             aiResult.error.code === "SCHEMA_INVALID"
@@ -247,17 +294,20 @@ export const ingestCv = action({
         return { status: "failed" as const };
       }
 
-      await ctx.runMutation(api.applications.applyExtraction, {
+      // Post-check determinista de evidencia (anti alucinación/inyección):
+      // la evidencia citada debe existir en el texto real del CV.
+      const checked = verifyExtractionAgainstSource(text, aiResult.data);
+      await ctx.runMutation(internal.applications.applyExtraction, {
         applicationId: args.applicationId,
         extractedText: text,
-        extraction: aiResult.data,
+        extraction: checked.extraction,
       });
 
       return { status: "ready" as const };
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Error desconocido al procesar el CV.";
-      await ctx.runMutation(api.applications.markFailed, {
+      await ctx.runMutation(internal.applications.markFailed, {
         applicationId: args.applicationId,
         reason: message.slice(0, 300),
       });
@@ -266,8 +316,11 @@ export const ingestCv = action({
   },
 });
 
-/** Aplica extracción + calcula y persiste el match determinista. 🔍 */
-export const applyExtraction = mutation({
+/**
+ * Aplica extracción + calcula y persiste el match determinista.
+ * INTERNAL: solo el action del pipeline puede invocarla (audit A-02).
+ */
+export const applyExtraction = internalMutation({
   args: {
     applicationId: v.id("applications"),
     extractedText: v.string(),
@@ -424,20 +477,25 @@ export const decide = mutation({
       throw new Error("La nota no puede superar 1000 caracteres.");
     }
 
-    await ctx.db.patch(args.applicationId, {
-      status: args.status,
-      decidedByUserId: userId,
-      decidedAt: Date.now(),
-      decisionNote: args.note?.trim(),
-    });
-
+    // Rate limit ENFORZADO antes de escribir (no solo contado).
     const used = await countUsage(ctx, {
       userId,
       organizationId: application.organizationId,
       kind: "application.decide",
       sinceMs: DAY_MS,
     });
-    void used;
+    if (used >= LIMITS.decisionsPerDay) {
+      throw new Error(
+        `Límite de ${LIMITS.decisionsPerDay} decisiones por día alcanzado.`,
+      );
+    }
+
+    await ctx.db.patch(args.applicationId, {
+      status: args.status,
+      decidedByUserId: userId,
+      decidedAt: Date.now(),
+      decisionNote: args.note?.trim(),
+    });
 
     await audit(ctx, {
       actorUserId: userId,
@@ -477,6 +535,19 @@ export const addNote = mutation({
       throw new Error("La nota debe tener entre 1 y 2000 caracteres.");
     }
 
+    // Rate limit por organización/día (LIMITS.notesPerDay).
+    const used = await countUsage(ctx, {
+      userId,
+      organizationId: application.organizationId,
+      kind: "note.create",
+      sinceMs: DAY_MS,
+    });
+    if (used >= LIMITS.notesPerDay) {
+      throw new Error(
+        `Límite de ${LIMITS.notesPerDay} notas por día alcanzado.`,
+      );
+    }
+
     const noteId = await ctx.db.insert("recruiterNotes", {
       applicationId: args.applicationId,
       organizationId: application.organizationId,
@@ -490,6 +561,12 @@ export const addNote = mutation({
       action: "note.create",
       targetType: "recruiterNote",
       targetId: noteId,
+    });
+    await recordUsage(ctx, {
+      userId,
+      organizationId: application.organizationId,
+      kind: "note.create",
+      dedupeKey: `note.create:${noteId}`,
     });
     return { noteId };
   },

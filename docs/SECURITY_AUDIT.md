@@ -29,7 +29,9 @@
 | VULN-11 | **HIGH** | Clave de API del servicio de correo como **literal en el repositorio** | **CORREGIDO en código · ROTACIÓN PENDIENTE** |
 | VULN-12 | MEDIUM | `securityEvents` **nunca registraba nada** (rollback ACID de Convex) | **CORREGIDO y verificado** |
 | VULN-13 | LOW | Las mutaciones lanzan `Error` plano → el cliente ve `Server Error [Request ID]` | **ACCEPTED_RISK** |
-| **VULN-14** | **HIGH** | Las denegaciones de **autorización** no dejan `securityEvent` (siguen lanzando) | **ABIERTO (OPEN)** |
+| **VULN-14** | **HIGH** | Las denegaciones de **autorización** no dejaban `securityEvent` (siguen lanzando) | **CORREGIDO y VERIFICADO** (25/25) |
+| **VULN-15** | **LOW** | Cobertura de auditoría: las funciones originales siguen siendo públicas, así que su denegación se registra solo si se invocan por `api.audited.*` | **ABIERTO (cobertura, no autorización)** |
+| **VULN-16** | **INFO** | Denegaciones por argumentos inválidos no generan evento: el validador de Convex actúa antes del handler | **ABIERTO (limitación de plataforma, no expone datos)** |
 
 ---
 
@@ -243,7 +245,151 @@ Coste: `mutation → action` cambia la semántica transaccional (posible escritu
 parcial ante reintento) y obliga a revisar la idempotencia de cada endpoint. Es un
 cambio de arquitectura, no un parche: no corresponde a un gate de producción.
 
-**Estado: OPEN.**
+**Estado: CORREGIDO y VERIFICADO.** Ver §8-bis.
+
+---
+
+## 8-bis. VULN-14 — CORRECCIÓN IMPLEMENTADA Y VERIFICADA
+
+### Arquitectura elegida (A + D) y por qué no hay bypass
+
+El arreglo es **aditivo**: no modifica ninguna función ya verificada, las
+**envuelve**. Archivos nuevos:
+
+| Fichero | Rol |
+|---|---|
+| `src/convex/lib/denial.ts` | Taxonomía **cerrada** de denegaciones + clasificación de errores |
+| `src/convex/internal/authorization.ts` | `classifyAuthorization` (internalQuery, solo lectura) y `logDenial` (internalMutation) |
+| `src/convex/lib/audited.ts` | Fábrica `auditedAction()`: el wrapper |
+| `src/convex/audited.ts` | 17 wrappers que exponen la vía auditada |
+
+Flujo de un wrapper:
+
+```
+action auditada (pública)
+ ├─ 1. runQuery internal.classifyAuthorization   ← SOLO LECTURA
+ │     · no tiene permiso → no se llama a la operación
+ ├─ 2. runQuery|runMutation <función real>        ← UNA sola llamada
+ └─ 3. catch(error):
+       · classifyDenial(error) === null → se propaga SIN registrar
+       · si es denegación → runMutation internal.logDenial (transacción APARTA)
+       · y EN TODOS LOS CASOS se vuelve a lanzar el error
+```
+
+Garantía por garantía:
+
+| Propiedad | Cómo se conserva |
+|---|---|
+| **fail-closed** | El error **se relanza siempre**. Nunca se devuelve `{ok:false}` que un caller pueda ignorar. Es la diferencia crítica frente a «cambiar `throw` por `return`». |
+| **atomicidad** | La operación real sigue siendo **una única** llamada a una única query/mutación. |
+| **idempotencia** | Las mutaciones reales no se han tocado. |
+| **tenant isolation** | Sin cambios: sigue.validando `requireMembership`. El wrapper solo puede **denegar**, jamás autorizar. |
+| **no falsificable** | `internal/*` **no es invocable desde el cliente**. No existe ninguna función pública que escriba en `securityEvents`. El cliente no envía `reason`, ni `kind`, ni `userId`, ni `tenantVerified`: se derivan en servidor. |
+| **persistencia** | `logDenial` corre en una transacción **distinta**, que confirma. |
+| **TOCTOU** | Inofensivo: entre el preflight y la operación puede revocarse una membresía; la operación real vuelve a comprobar y su `catch` registra igualmente. |
+| **nada de PII ni secretos** | Se persiste `operation`, `reason` (enum cerrado), `organizationId`, `userId` (del token), `tenantVerified`, `detail = "<operación>:<motivo>"`. Nunca el mensaje crudo del error, ni el cuerpo de la petición. |
+
+### Evidencia ejecutada
+
+```bash
+bash scripts/verify_audit_denial_semantics.sh
+→ SECURITY_EVENTS_BEFORE=249
+→ SECURITY_EVENTS_AFTER=251
+→ DELTA=2
+→ AUTHORIZATION_DENIAL_AUDIT=PERSISTED
+```
+
+Fila real resultante:
+
+```
+operation=orgs.auditTrail  kind=authz_denied_unauthenticated
+reason=unauthenticated     organizationId=m97...  tenantVerified=false
+```
+
+```bash
+bunx vitest run tests/integration/vuln14.denial.audit.integration.test.ts
+→ Tests 25 passed (25)
+```
+
+Matriz cubierta (celda a celda, con identidad real, evento y recurso intacto):
+
+`anonymous→orgAuditTrail` · `anonymous→orgInvite` · `outsider→orgMembers` ·
+`outsider→orgInvite` · `outsider→orgRemoveMember` · `candidate→orgMembers` ·
+`candidate→orgAuditTrail` · `recruiter→orgAuditTrail` · `recruiter→orgInvite` ·
+`hiring_manager→orgAuditTrail` · `hiring_manager→orgRemoveMember` ·
+`outsider→applicationsListByJob` (cross-tenant read) ·
+`outsider→applicationsAddNote` (cross-tenant write) ·
+`outsider→matchesGetForApplication` (IDOR) · `miembro revocado` (3 operaciones
+denegadas y registradas con la MISMA sesión viva) · `replay` (3→3) ·
+`concurrencia` (5→5) · `ALLOW` no genera evento · `logDenial` inalcanzable ·
+no se puede inyectar campos del evento · no hay superficie pública de escritura
+ni de lectura de `securityEvents`.
+
+Guard de cobertura: `tests/static/auditCoverage.test.ts` → **6/6**. Falla si
+aparece un endpoint sensible sin wrapper, si un wrapper no es `action`, si un
+wrapper no delega en una función real, o si `audited` toca `securityEvents`.
+
+### Corrección de un falso positivo de la propia auditoría
+
+Durante la verificación se diagnosticó como « deduplicación de eventos » lo que
+era en realidad un **error de medición**: `bunx convex data` sin `--limit` solo
+muestra las **100 filas más recientes**, de modo que el contador se saturaba y
+daba `DELTA=0` aunque los eventos se estaban escribiendo. Se corrigió la
+medición (`--limit 10000` y nota en el test). **No se reporta ninguna
+vulnerabilidad de deduplicación porque no existe.**
+
+---
+
+## 8-ter. VULN-15 — LOW — Cobertura de auditoría, no de autorización
+
+**Hallazgo.** Las funciones originales (`api.orgs.*`, `api.jobs.*`,
+`api.applications.*`, `api.matches.*`) siguen siendo públicas porque las usan la
+UI y las suites ya VERIFICADAS. Un cliente que las invoque directamente **sigue
+siendo denegado** (la autorización no se debilita en absoluto) pero esa
+denegación **no se registra**.
+
+Evidencia directa:
+
+```bash
+bunx convex run orgs:members '{"organizationId":"…"}'
+→ Uncaught Error: NOT_FOUND at requireMembership (rbac.ts:32)   # denegada
+→ securityEvents: sin incremento                               # NO registrada
+```
+
+**Gravedad real: LOW.** Es un hueco de *trazabilidad*, no de control de acceso.
+
+**Remediación concreta, no implementada en el gate** (y por qué):
+
+1. Migrar los 15 call sites de la UI (`src/pages/Org.tsx`, Dashboard) de
+   `api.orgs.*` a `api.audited.*`, convirtiendo además los `query(` en `action(`.
+2. Mover las originales a `internal` una vez migradas.
+
+No se ha hecho en el gate porque cambiar `query`→`action` en la UI altera el
+comportamiento en runtime que no se puede verificar sin navegador, y porque
+mover a `internal` rompería las suites de RBAC ya VERIFICADAS. El guard
+`tests/static/auditCoverage.test.ts` mantiene la lista explícita y falla si
+crece la superficie sin auditar.
+
+**Estado: OPEN (cobertura de auditoría).**
+
+---
+
+## 8-quater. VULN-16 — INFO — Denegaciones por argumentos inválidos
+
+**Hallazgo.** Los ids de Convex llevan checksum y los validadores de argumentos
+actúan en la **capa de transporte, antes de que exista el handler**. Una
+petición con un `organizationId` de formato inválido, o con campos no
+declarados, se rechaza sin generar `securityEvent`.
+
+**Por qué es INFO y no un agujero:** la petición **nunca llega** a la lógica de
+negocio, no lee ni escribe nada y no revela información de ningún tenant. No hay
+contenido que auditar. Verificado en la matriz: denegación sin fuga de datos.
+
+**Remediación** (opcional, solo si el negocio lo exige): un endpoint auditor
+«rechazo de bajo nivel» que acepte el cuerpo crudo y registre el rechazo. Se
+desaconseja: amplía superficie pública para cubrir un caso sin contenido.
+
+**Estado: OPEN por limitación de plataforma (no bloquea).**
 
 ---
 
@@ -266,7 +412,9 @@ cambio de arquitectura, no un parche: no corresponde a un gate de producción.
 | Structured output | **PARTIAL** | el proveedor no garantiza esquema estricto; depende de prompt + normalización + zod + post-check + fail-closed **de la aplicación** |
 | Prompt injection | **PARTIAL** | 8/11 verificados, 3 upstream |
 | Security events (validación) | **VERIFIED** | `SECURITY_EVENTS=PERSISTED`, 30+ filas reales |
-| **Security events (autorización)** | **OPEN — VULN-14** | `DELTA=0` medido |
+| **Security events (autorización)** | **VERIFIED** | `AUTHORIZATION_DENIAL_AUDIT=PERSISTED`, `DELTA=2`; matriz `vuln14.denial.audit` **25/25**; guard `auditCoverage` **6/6** |
+| Security events (cobertura) | **PARTIAL — VULN-15** | Las originales (`api.orgs.*`…) deniegan **sin registrar**. La autorización NO se debilita: es un hueco de trazabilidad | No (LOW) |
+| Security events (args inválidos) | **OPEN — VULN-16** | El validador de Convex actúa antes del handler. Sin fuga de datos ni acceso a lógica de negocio | No (INFO) |
 | Audit log | **VERIFIED** | `gates.integration.test.ts` GATE H |
 | Rate limiting (identidad/org/acción) | **VERIFIED** | `gates.integration.test.ts` GATE I |
 | **Rate limiting pre-auth por IP** | **BLOCKED_BY_PLATFORM** | IP no falsificable pero inalcanzable; `tests/edge/rateLimit.contract.test.ts` **falla a propósito** sin `EDGE_BASE_URL` |
@@ -297,10 +445,21 @@ tabla de eventos de seguridad nunca había registrado una sola fila (VULN-12).
 Las tres están corregidas y verificadas con ejecución real, no con lectura de código.
 
 Lo que impide declarar el sistema production ready **no es la calidad del código**
-—que es alta y está bien verificado— sino cinco hechos de infraestructura y de
-gobierno: no hay WAF para el abuso pre-auth, la credencial no está rotada, las
-denegaciones de autorización no son auditables (VULN-14), no hay política operativa
-de backups y RPO/RTO de negocio, y no hay observabilidad.
+—que es alta y está bien verificada— sino cinco hechos de infraestructura y de
+gobierno: no hay WAF para el abuso pre-auth, la credencial no está rotada, no hay
+política operativa de backups con RPO/RTO de negocio, no hay observabilidad, y no
+existe un pipeline de CI/CD ni una configuración de producción verificados.
+
+**VULN-14 está cerrado.** Las denegaciones de autorización quedan registradas y
+la autorización sigue siendo obligatoria: el error se relanza siempre. Lo que
+queda abierto en materia de auditoría es de **cobertura** (VULN-15, LOW) y de
+**limitación de plataforma** (VULN-16, INFO); ninguna de las dos afecta al
+control de acceso.
+
+**VULN-14 está cerrado.** Las denegaciones de autorización quedan registradas y
+la autorización sigue siendo obligatoria. Lo que queda abierto en materia de
+auditoría es de **cobertura** (VULN-15, LOW) y de **limitación de plataforma**
+(VULN-16, INFO), ninguna de las dos con impacto en el control de acceso.
 
 Compilar, pasar los tests y tener el build verde **no es production ready**: es
 una señal de ausencia de regresiones. Convertir un `BLOCKED`, un `NOT_MEASURED` o

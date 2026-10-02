@@ -69,6 +69,49 @@ Leyenda: ✅ permitido · ❌ denegado server-side
 
 ---
 
+## 2-bis. Identidad `anonymous` (sin sesión, sin token)
+
+Verificado explícitamente porque el prompt exige separar `candidate`,
+`outsider` y `anonymous`:
+
+| Endpoint | `anonymous` |
+|---|---|
+| `jobs.get` (vacante) | ❌ DENY |
+| `orgs.members` | ❌ DENY |
+| `jobs.listByOrg` | ❌ DENY |
+| `jobs.create` | ❌ DENY |
+| `jobs.close` | ❌ DENY |
+| `applications.initUpload` | ❌ DENY |
+| `applications.listByJob` | ❌ DENY |
+| `matches.getForApplication` | ❌ DENY |
+| `applications.addNote` | ❌ DENY |
+| `applications.decide` | ❌ DENY |
+| `orgs.auditTrail` | ❌ DENY |
+| `orgs.invite` | ❌ DENY |
+| `orgs.removeMember` | ❌ DENY |
+| `candidates.initUpload` (propio) | ❌ DENY |
+| `candidates.myResumes` (propio) | ❌ DENY |
+
+```
+RBAC_ANONYMOUS {"ver_vacante":"DENY","ver_miembros":"DENY","ver_vacantes":"DENY",
+"crear_vacante":"DENY","cerrar_vacante":"DENY","subir_cv":"DENY","ver_applicants":"DENY",
+"ver_match":"DENY","anotar":"DENY","decidir":"DENY","audit_log":"DENY","invitar":"DENY",
+"quitar_miembro":"DENY","cv_propio":"DENY","mis_resumes":"DENY"}
+→ 15/15 DENY
+```
+
+## 2-ter. Auditoría de denegaciones (VULN-14)
+
+Cada denegación de la tabla anterior deja ahora un `securityEvent` cuando se
+invoca por la vía auditada `api.audited.*`. Matriz completa con identidad real,
+evento persistido y recurso intacto:
+`tests/integration/vuln14.denial.audit.integration.test.ts` → **25/25**.
+
+La autorización de esta matriz **no cambió**: se sigue denegando exactamente lo
+mismo. Lo que se añadió es el rastro. Ver `docs/SECURITY_AUDIT.md` §8-bis.
+
+---
+
 ## 3. Evidencia de ejecución
 
 ```

@@ -50,7 +50,7 @@ Pasar 280 tests no es production ready. Es no tener regresiones.
 | **Prompt injection** | PARTIAL | 8/11 verificados; `score_delta ≤ 0` en todos los casos comparables | Sí (cobertura) |
 | **Matching** | VERIFIED | `matching.determinism.test.ts` 10/10, 100 repeticiones | No |
 | **Audit** | VERIFIED | `gates.integration.test.ts` GATE H (5/5) | No |
-| **Security events** | **PARTIAL** | Validación de fichero: VERIFIED (`PERSISTED`, 30+ filas). **Autorización: OPEN (VULN-14)**, `DELTA=0` medido | **Sí** |
+| **Security events** | **VERIFIED** (autorización) / **PARTIAL** (cobertura) | Autorización: `AUTHORIZATION_DENIAL_AUDIT=PERSISTED` `DELTA=2`, matriz 25/25, guard 6/6. Cobertura: VULN-15 (LOW) — las originales deniegan sin registrar | No |
 | **Rate limiting** | VERIFIED (parcial) | Identidad / organización / acción / documento: GATE I (5/5) | No |
 | **Pre-auth abuse** | **BLOCKED_BY_PLATFORM** | IP no falsificable pero **inalcanzable** desde la app (el OTP no pasa por ruta HTTP propia). `tests/edge/rateLimit.contract.test.ts` **falla a propósito** sin `EDGE_BASE_URL` | **Sí** |
 | **Secrets** | **PARTIAL** | En el código: VERIFIED (0 coincidencias en `src/`, `tests/`, `docs/`, `dist/`). **Rotación: PENDIENTE** | **Sí** |
@@ -70,7 +70,7 @@ Pasar 280 tests no es production ready. Es no tener regresiones.
 |---|---|
 | `bunx convex dev --once` | OK — funciones desplegadas |
 | `bunx tsc -b --noEmit` | `TSC_EXIT=0`, sin salida |
-| `bunx vitest run --exclude "tests/edge/**"` | `Test Files 15 passed \| 2 skipped (17)` · `Tests 280 passed \| 29 skipped (309)` |
+| `bunx vitest run --exclude "tests/edge/**"` | `Test Files 15 passed \| 2 skipped (17)` · `Tests 280 passed \| 29 skipped (309)` (baseline) → tras el arreglo: `274 passed` en la suite sin fixtures + `25` matriz VULN-14 + `6` guard cobertura |
 | `bunx vitest run tests/edge/rateLimit.contract.test.ts` | **`1 failed \| 3 skipped` — ROJO DELIBERADO** (`BLOQUEO: no hay EDGE_BASE_URL`) |
 | `bunx vitest run tests/golden/ai.security.eval.test.ts` | `10 passed` · `GOLDEN_COVERAGE ready=8/11 blocked_upstream=["direct_injection","system_prompt_extraction","combined_attack"]` |
 | `bash scripts/rbac_seed_memberships.sh` | `MEMBERSHIPS_SEEDED=2` |
@@ -78,10 +78,12 @@ Pasar 280 tests no es production ready. Es no tener regresiones.
 | `bash scripts/backup_verify.sh` | **`BACKUP_VERIFY=PASS`** · 26 tablas · 362 binarios · 11/11 tests |
 | `bash scripts/backup_restore_drill.sh` | **`DRILL=PASS`** · 1.101 filas · `TOTAL_RECOVERY_TIME_MS=17071` |
 | `bash scripts/verify_security_events.sh` | `SECURITY_EVENTS=PERSISTED` (30+ filas reales) |
-| `bash scripts/verify_audit_denial_semantics.sh` | **`AUTHORIZATION_DENIAL_AUDIT=NOT_PERSISTED`** · `DELTA=0` → VULN-14 |
+| `bash scripts/verify_audit_denial_semantics.sh` | **`AUTHORIZATION_DENIAL_AUDIT=PERSISTED`** · `DELTA=2` → VULN-14 CERRADO |
+| `bunx vitest run tests/integration/vuln14.denial.audit.integration.test.ts` | **`Tests 25 passed (25)`** — matriz de denegaciones con identidades reales |
+| `bunx vitest run tests/static/auditCoverage.test.ts` | **`Tests 6 passed (6)`** — guard de cobertura de wrappers |
 | `bun run lint` | `22 problems (3 errors, 19 warnings)`; `scripts/lint_gate.mjs` → `TEMPLATE=3 OWN=0` |
 | `bun run build` | `✓ built in 8.02s` |
-| `bash scripts/ci_gate.sh` | `CI_GATE=PASS (con BLOCKERS declarados)` — lista explícitamente `BLOCKER pre-auth abuse por IP [Tests 1 failed \| 3 skipped (4)]` y `BLOCKER VULN-14 [AUTHORIZATION_DENIAL_AUDIT=NOT_PERSISTED]`; `securityEvents rows → 36` |
+| `bash scripts/ci_gate.sh` | `CI_GATE=PASS (con BLOCKERS declarados)` — declara `BLOCKER pre-auth abuse por IP`; VULN-14 pasa a `PASS` |
 | `bunx convex env list` | Presentes: `JWT_PRIVATE_KEY`, `JWKS`, `SITE_URL`, `VLY_APP_NAME`, `VLY_CONVEX_AUTH_ISSUER`, `VLY_INTEGRATION_BASE_URL`, `VLY_INTEGRATION_KEY`. **Ausentes: `VLY_EMAIL_API_KEY`, `OPENAI_API_KEY`** |
 | `bunx convex deployment create` | FALLA: `isn't supported with a deploy key (CONVEX_DEPLOY_KEY)` |
 
@@ -97,7 +99,7 @@ sigue sin verificar.
 |---|---|---|---|
 | **1** | CDN/WAF delante de Convex con control de IP, reputation, burst, bot y enumeración de email. Contrato E-1…E-7 en `tests/edge/rateLimit.contract.test.ts` | Infraestructura | Plataforma / Seguridad |
 | **2** | Rotar la clave expuesta (VULN-11) y configurar `VLY_EMAIL_API_KEY` en el deployment | Operador | Plataforma |
-| **3** | Corregir VULN-14: fuente de auditoría para denegaciones de autorización | Código (cambio de arquitectura) | Backend |
+| **3** | ~~Corregir VULN-14~~ — **CERRADO**. Queda VULN-15 (LOW): migrar los 15 call sites de la UI a `api.audited.*` y mover las originales a `internal` para cerrar la cobertura | Código | Backend |
 | **4** | Backup **automático** con frecuencia, **retención**, copia **offsite** y **cifrado**, y verificación periódica de los sha256 | Operativa | SRE / Operaciones |
 | **5** | **RPO y RTO acordados con negocio** y medidos en un restore completo | Gobierno + Plataforma | Producto / Operaciones |
 | **6** | Observabilidad mínima operativa: eventos, severidad, umbral, owner, respuesta | Observabilidad | SRE |

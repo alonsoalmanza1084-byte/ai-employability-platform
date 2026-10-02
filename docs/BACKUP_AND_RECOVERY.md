@@ -137,7 +137,7 @@ acto y el sha256 final lo demuestra.
 | Métrica | TARGET | ASSUMPTION | MEASURED | Status |
 |---|---|---|---|---|
 | **RPO** (dato máximo aceptable perdido) | **NO DEFINIDO** — falta el objetivo de negocio | Ninguna: no se inventa un número | No medido | **NOT_DEFINED** |
-| **RTO** a nivel de **tabla**, mismo deployment | — | Ninguna | **17.071 ms** (backup 2.668 + pérdida simulada 9.255 + restore 5.148) | **MEASURED (ámbito limitado)** |
+| **RTO** a nivel de **tabla**, mismo deployment | — | Ninguna | **17.071 ms** (run anterior) / **39.291 ms** (run de cierre: 2.756 + 36.535) | **MEASURED (ámbito limitado)** |
 | **RTO** a nivel de **deployment completo** | **NO DEFINIDO** — falta el objetivo de negocio | "Un restore completo son minutos" — **NO VERIFICADO** | No medible | **NOT_MEASURED / BLOCKED_BY_PLATFORM** |
 
 ### Lo que sí está medido (ejecutado, no estimado)
@@ -147,16 +147,21 @@ bash scripts/backup_restore_drill.sh
 ```
 
 ```
-BACKUP_SHA256=4eda948ae67258e0d2509c6345d4e6ee33e0cf4815614f7704026c5ee47461d1
-RESTORE_ROWS=1101
-ID_SET_SHA256=e6a1b7a69dd205f28ce5bb8a3c36153b926923b1661dfc0c81717ba1d1ca9b73
+BACKUP_SHA256=d83a9466dde5f7310d54036a551bc07d30c83cf60c852bbbdb7a3e628ca80ca0
+RESTORE_ROWS=1406
+ID_SET_SHA256=(conjunto de IDs idéntico antes y después)
 SCOPE=table_level_same_deployment
-BACKUP_DURATION_MS=2668
-LOSS_SIMULATION_MS=9255
-RESTORE_DURATION_MS=5148
-TOTAL_RECOVERY_TIME_MS=17071
+BACKUP_DURATION_MS=2756
+RESTORE_DURATION_MS=36535
 DRILL=PASS
 ```
+
+**Medición más reciente (2026-10-01, cierre del gate):** `BACKUP_VERIFY=PASS`
+(26 tablas, 452 binarios, 11/11 tests de integridad) y `DRILL=PASS` sobre 1.406
+filas. El `RESTORE_DURATION_MS` varía entre ejecuciones (5.148 ms en el drill
+anterior, 36.535 ms en este) porque incluye la importación vía CLI y la
+re-ejecución del export; **la dispersión demuestra por qué no se puede
+declarar un RTO con una sola medición.**
 
 **Este número NO es el RTO de producción.** Es el tiempo de ciclo de una tabla
 de 1.101 filas dentro del mismo deployment. Un restore completo incluye 26

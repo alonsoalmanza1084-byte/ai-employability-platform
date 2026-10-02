@@ -64,6 +64,7 @@ printf '\n########## suites con estado (requieren pipeline de fixtures) ########
 RESULTS+=("INFO  backup recovery  → bash scripts/backup_verify.sh")
 RESULTS+=("INFO  rbac e2e         → seed + scripts/rbac_seed_memberships.sh + matriz")
 RESULTS+=("INFO  golden eval      → bunx vitest run tests/golden/ai.security.eval.test.ts")
+RESULTS+=("INFO  matriz VULN-14   → rbac seed + scripts/rbac_seed_memberships.sh + tests/integration/vuln14.denial.audit.integration.test.ts")
 
 # Comprobaciones deliberadamente ROJAS: NO se ocultan y NO se relaxationan.
 # Cada una se ejecuta y su resultado se reporta tal cual.
@@ -72,9 +73,23 @@ EDGE_OUT=$(bunx vitest run tests/edge/rateLimit.contract.test.ts 2>&1 | sed 's/\
 RESULTS+=("BLOCKER  pre-auth abuse por IP  → tests/edge/rateLimit.contract.test.ts  [$EDGE_OUT]")
 
 DENIAL_OUT=$(bash scripts/verify_audit_denial_semantics.sh 2>&1 | grep -E "^AUTHORIZATION_DENIAL_AUDIT=" | tail -1)
-RESULTS+=("BLOCKER  VULN-14 auditoría de denegaciones de autorización  → scripts/verify_audit_denial_semantics.sh  [$DENIAL_OUT]")
+if [ "$DENIAL_OUT" = "AUTHORIZATION_DENIAL_AUDIT=PERSISTED" ]; then
+  RESULTS+=("PASS  VULN-14 auditoría de denegaciones de autorización  → scripts/verify_audit_denial_semantics.sh  [$DENIAL_OUT]")
+else
+  RESULTS+=("BLOCKER  VULN-14 auditoría de denegaciones de autorización  → scripts/verify_audit_denial_semantics.sh  [$DENIAL_OUT]")
+fi
 
-EVENTS_OUT=$(bunx convex data securityEvents 2>&1 | grep -c '^"')
+echo
+echo "########## cobertura de auditoría de denegaciones ##########"
+COV_OUT=$(bunx vitest run tests/static/auditCoverage.test.ts 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E "Tests +[0-9]" | tail -1 | sed 's/^ *//')
+if echo "$COV_OUT" | grep -q "failed"; then
+  RESULTS+=("FAIL  cobertura de auditoría (endpoint sensible sin wrapper)  [$COV_OUT]")
+  FAILED=1
+else
+  RESULTS+=("PASS  cobertura de auditoría de denegaciones  [$COV_OUT]")
+fi
+
+EVENTS_OUT=$(bunx convex data securityEvents --limit 10000 2>&1 | grep -c '^"')
 RESULTS+=("INFO  securityEvents rows  → $EVENTS_OUT")
 
 printf '\n########## resumen ##########\n'

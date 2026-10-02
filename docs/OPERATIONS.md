@@ -150,42 +150,52 @@ Para poder pasar de `NOT_DEFINED` / `NOT_VERIFIED` a algo verificable:
 
 ---
 
-## 6. Auditoría de denegaciones de autorización — `VULN-14 OPEN`
+## 6. Auditoría de denegaciones de autorización — `VULN-14 CERRADO`
 
-Añadido en la auditoría #6 (production gate).
+Actualizado en el cierre del production gate.
 
-### Lo que sí se registra
+### Lo que se registra
 
-`scripts/verify_security_events.sh` → `SECURITY_EVENTS=PERSISTED`.
-`securityEvents` contiene **30+ filas reales** de denegaciones de **validación de
-fichero** (`bad_extension`, `file_too_large`, `org_bad_extension`) con el
-`userId` del actor. Los uploads válidos siguen funcionando: no se ha roto el camino bueno.
+`scripts/verify_security_events.sh` → `SECURITY_EVENTS=PERSISTED` (validación de ficheros).
+`scripts/verify_audit_denial_semantics.sh` → **`AUTHORIZATION_DENIAL_AUDIT=PERSISTED`**
+(`DELTA=2`): los intentos de escalada de privilegios y de acceso cross-tenant
+**dejan rastro** cuando la operación se invoca por la vía auditada `api.audited.*`.
 
-### Lo que NO se registra
+Cada evento lleva: `operation`, `reason` (enum cerrado), `organizationId`,
+`userId` (derivado del token), `tenantVerified` y `detail = "<operación>:<motivo>"`.
+**Nunca** el mensaje crudo del error, ni el cuerpo de la petición, ni PII.
 
-`scripts/verify_audit_denial_semantics.sh` → `AUTHORIZATION_DENIAL_AUDIT=NOT_PERSISTED`,
-`DELTA=0`. Los intentos de **escalada de privilegios** y de **acceso cross-tenant**
-no dejan rastro, porque `requireMembership` lanza y el rollback ACID de Convex
-revierte cualquier `insert` de esa misma transacción.
+### Lo que sigue sin registrarse
 
-**Esto no se convierte en PASS.** Es un hallazgo abierto de severidad **ALTA**
-que bloquea producción. Detalle completo y diseño de remediación en
-`docs/SECURITY_AUDIT.md` §8.
+- **VULN-15 (LOW)**: si un cliente invoca la función **original** (`api.orgs.*`,
+  `api.jobs.*`, `api.applications.*`, `api.matches.*`) en vez del wrapper, la
+  denegación ocurre igual pero **no se registra**. La autorización no se
+  debilita: es un hueco de trazabilidad. Remediación definida en
+  `docs/SECURITY_AUDIT.md` §8-ter.
+- **VULN-16 (INFO)**: las peticiones con argumentos inválidos se rechazan en la
+  capa de transporte de Convex, antes del handler, y no generan evento. No
+  llegan a la lógica de negocio ni revelan información.
 
-### Consecuencia operativa
+### Consecuencia operativa (sigue vigente)
 
 `securityEvents` **no tiene ninguna query pública**: solo se lee por CLI
-(`bunx convex data securityEvents`). Ningún `org_admin` puede revisar los
-eventos de seguridad de su organización desde el producto, y ningún equipo de
-seguridad los consume automáticamente. Mientras VULN-14 siga abierto, la
-observabilidad de seguridad depende de acceso directo a la consola de Convex.
+(`bunx convex data securityEvents --limit 10000`). Ningún `org_admin` puede
+revisar los eventos desde el producto. Esto **no** se ha resuelto en este gate:
+es parte de `OBSERVABILITY = NOT_VERIFIED`.
+
+> **Trampa de medición documentada:** `convex data` **sin `--limit` solo
+> muestra las 100 filas más recientes**. Con ese tope el contador se saturaba y
+> hacía creer que los eventos no se escribían. Todos los scripts y tests usan
+> `--limit 10000` por este motivo.
 
 ### Comprobaciones para el pipeline
 
 ```bash
-bash scripts/verify_security_events.sh          # debe imprimir PERSISTED
-bash scripts/verify_audit_denial_semantics.sh   # debe imprimir PERSISTED
+bash scripts/verify_security_events.sh          # → SECURITY_EVENTS=PERSISTED
+bash scripts/verify_audit_denial_semantics.sh   # → AUTHORIZATION_DENIAL_AUDIT=PERSISTED
+bunx vitest run tests/static/auditCoverage.test.ts          # → 6 passed
+bunx vitest run tests/integration/vuln14.denial.audit.integration.test.ts  # → 25 passed
 ```
 
-El segundo **falla hoy a propósito**, igual que el contrato de edge. Ambos rojos
-deben permanecer visibles en el reporte del pipeline hasta que se cierren.
+El contrato de edge (`tests/edge/rateLimit.contract.test.ts`) **sigue rojo a
+propósito** y debe permanecer visible en el reporte del pipeline.

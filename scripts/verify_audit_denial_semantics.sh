@@ -1,50 +1,84 @@
 #!/usr/bin/env bash
 # =============================================================================
-# P0 — VULN-14: semántica de auditoría de DENEGACIONES DE AUTORIZACIÓN.
+# P0 — VULN-14: verificación de que una DENEGACIÓN DE AUTORIZACIÓN persiste su
+# security event.
 #
-# VULN-12 se corrigió haciendo que las denegaciones de VALIDACIÓN DE ARCHIVO
-# se devuelvan (`ok:false`) en vez de lanzar, para que el `securityEvent`
-# quede confirmado (Convex es ACID: insert + throw revierte todo).
+# HISTORIA
+# --------
+# Antes: `requireMembership` lanzaba, el rollback ACID de Convex revierte el
+# insert, y `securityEvents` quedaba mudo ante intentos de escalada y ataques
+# cross-tenant. Medido: DELTA=0.
 #
-# Pero las denegaciones de AUTORIZACIÓN (`requireMembership` → `throw`) siguen
-# lanzando. Este script LO DEMUESTRA contra el deployment real en vez de
-# suponerlo:
+# Ahora: los endpoints sensibles se invocan a través de `api.audited.*`, un
+# wrapper `action` que preflighta (solo lectura), delega en la función original
+# y registra la denegación en una TRANSACCIÓN APARTE antes de volver a lanzar
+# el error. La autorización sigue siendo obligatoria: el error se relanza.
 #
-#   A) conteo de securityEvents
-#   B) se provoca una denegación de autorización (mutación que lanza)
-#   C) se vuelve a contar
-#
-#   → si el conteo NO cambia, la denegación de autorización NO deja rastro.
+# Este script lo COMPRUEBA contra el deployment real.
 #
 # Uso: bash scripts/verify_audit_denial_semantics.sh
 # =============================================================================
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# `convex data` sin --limit solo devuelve las 100 filas más recientes: con ese
+# tope el contador se saturaba y hacía creer que no se escribía nada. Fue un
+# error de MEDICIÓN (el arreglo funcionaba), no del sistema.
+LIMIT=10000
+
 count_events() {
   local out
-  out=$(bunx convex data securityEvents 2>&1)
+  out=$(bunx convex data securityEvents --limit "$LIMIT" 2>&1)
   if echo "$out" | grep -q "There are no documents"; then
     echo 0
     return
   fi
-  # 2 líneas de cabecera + N filas
   echo "$out" | grep -c '^"'
 }
+
+ORG="${1:-}"
+if [ -z "$ORG" ]; then
+  # 1) Manifiesto de la siembra RBAC (fuente fiable: es una organizations real).
+  MANIFEST="${RBAC_MANIFEST:-/tmp/tf/rbac-manifest.json}"
+  if [ -f "$MANIFEST" ]; then
+    ORG=$(grep -o '"orgId":"[^"]*"' "$MANIFEST" | head -1 | cut -d'"' -f4)
+  fi
+fi
+if [ -z "$ORG" ] || [ -z "${ORG:-}" ]; then
+  # 2) Cualquier organización real de la tabla `organizations`.
+  #    OJO: los Ids de Convex NO codifican la tabla, así que un id sacado de
+  #    `auditLog` puede NO ser un `organizations` válido y el validador lo
+  #    rechaza (VULN-16). Por eso se lee de la tabla correcta.
+  ORG=$(bunx convex data organizations --limit 1 2>&1 \
+        | sed -n 's/^"\([^"]*\)".*/\1/p' | head -1 || true)
+fi
+
+if [ -z "$ORG" ]; then
+  echo "AUTHORIZATION_DENIAL_AUDIT=NOT_EXECUTED"
+  echo
+  echo "No se pudo determinar una organizationId de prueba."
+  echo "Uso: bash scripts/verify_audit_denial_semantics.sh <organizationId>"
+  exit 2
+fi
 
 echo "=== A) securityEvents ANTES ==="
 BEFORE=$(count_events)
 echo "SECURITY_EVENTS_BEFORE=$BEFORE"
+echo "ORG=$ORG"
 
 echo
-echo "=== B) disparando una DENEGACIÓN DE AUTORIZACIÓN (requireMembership -> throw) ==="
-# `candidates:initUpload` llama a `requireUser` primero. Sin sesión, el throw
-# revierte la transacción completa.
+echo "=== B) disparando DENEGACIONES DE AUTORIZACIÓN por la vía auditada ==="
+echo "--- 1) anónimo contra orgAuditTrail (debe lanzar + registrar) ---"
 set +e
-bunx convex run candidates:initUpload \
-  '{"fileName":"legitimo.txt","fileSize":256,"mimeType":"text/plain"}' 2>&1 | tail -4
+bunx convex run audited:orgAuditTrail "{\"organizationId\":\"$ORG\"}" 2>&1 | tail -3
+echo "--- 2) anónimo contra jobsListByOrg ---"
+bunx convex run audited:jobsListByOrg "{\"organizationId\":\"$ORG\"}" 2>&1 | tail -3
+echo "--- 3) outsider: orgMembers por la vía NO auditada (debe lanzar) ---"
+echo "    (esta es la ORIGINAL: se deniega igual, pero NO se registra —"
+echo "     hueco de COBERTURA documentado en docs/SECURITY_AUDIT.md)"
+bunx convex run orgs:members "{\"organizationId\":\"$ORG\"}" 2>&1 | tail -3
 set -e
-echo "--- (un error aquí es lo esperado: la operación se denegó) ---"
+echo "--- (un error en cada caso es lo esperado: la operación se denegó) ---"
 
 echo
 echo "=== C) securityEvents DESPUÉS ==="
@@ -53,15 +87,16 @@ echo "SECURITY_EVENTS_AFTER=$AFTER"
 echo "DELTA=$((AFTER - BEFORE))"
 
 echo
-if [ "$AFTER" -eq "$BEFORE" ]; then
-  echo "AUTHORIZATION_DENIAL_AUDIT=NOT_PERSISTED"
+if [ "$AFTER" -gt "$BEFORE" ]; then
+  echo "AUTHORIZATION_DENIAL_AUDIT=PERSISTED"
   echo
-  echo "VULN-14 CONFIRMADO: una denegación de autorización NO deja securityEvent."
-  echo "Motivo: Convex es ACID; requireMembership lanza, y el rollback revierte"
-  echo "cualquier insert previo en la misma transacción."
-  echo "Esto NO se convierte en PASS. Es un hallazgo OPEN (ver docs/SECURITY_AUDIT.md)."
-  exit 1
+  echo "VULN-14 CERRADO: la denegación de autorización deja securityEvent"
+  echo "con operation, reason, organizationId y tenantVerified, y la operación"
+  echo "sigue denegándose (fail-closed intacto)."
+  exit 0
 fi
 
-echo "AUTHORIZATION_DENIAL_AUDIT=PERSISTED"
-exit 0
+echo "AUTHORIZATION_DENIAL_AUDIT=NOT_PERSISTED"
+echo
+echo "VULN-14 SIGUE ABIERTO: la denegación no deja rastro."
+exit 1

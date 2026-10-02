@@ -321,11 +321,28 @@ const schema = defineSchema(
       .index("by_org", ["organizationId"])
       .index("by_actor", ["actorUserId"]),
 
+    // VULN-14 (auditoría #6): un evento de denegación debe poder atribuirse a
+    // una operación, a un motivo CATEGORIZADO y a un tenant, sin PII ni secretos.
+    // organizationId es opcional a propósito: una denegación cross-tenant ocurre
+    // precisamente cuando el actor NO es miembro, así que el tenant del objetivo
+    // se registra aparte y `tenantVerified` marca si fue confirmado por el servidor.
     securityEvents: defineTable({
       kind: v.string(),
       userId: v.optional(v.id("users")),
       detail: v.string(),
-    }).index("by_kind", ["kind"]),
+      // --- campos de VULN-14 (opcionales para no romper las filas existentes) ---
+      organizationId: v.optional(v.id("organizations")),
+      operation: v.optional(v.string()),
+      // Motivo CATEGORIZADO (enum cerrado), nunca el mensaje crudo del error.
+      reason: v.optional(v.string()),
+      // ID de correlación de la petición, si el runtime lo expone.
+      correlationId: v.optional(v.string()),
+      // false = el objetivo-organización NO se pudo verificar comovinculado al actor.
+      tenantVerified: v.optional(v.boolean()),
+    })
+      .index("by_kind", ["kind"])
+      .index("by_userId_and_kind", ["userId", "kind"])
+      .index("by_organizationId_and_kind", ["organizationId", "kind"]),
 
     // Registro efímero de envíos de OTP (protección pre-auth email bombing,
     // auditoría #2). Las filas viejas (>1h) se borran en cada envío.

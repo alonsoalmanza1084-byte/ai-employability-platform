@@ -255,6 +255,32 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
     // Cualquier función nueva SIN aparecer aquí rompe el test: obliga a
     // clasificarla (pública con auth, o internal) antes de fusionar.
     const INVENTORY: Record<string, string> = {
+      // VULN-14 — auditoría de denegaciones. `internal/*` NO es alcanzable desde
+      // el cliente. `classifyAuthorization` es SOLO LECTURA y no autoriza nada;
+      // `logDenial` es la ÚNICA función del sistema que escribe securityEvents
+      // por decisión de autorización, y todos sus campos se derivan en servidor.
+      "internal/authorization.ts:classifyAuthorization": "internalQuery",
+      "internal/authorization.ts:logDenial": "internalMutation",
+      "internal/authorization.ts:_selfCheck": "internalQuery",
+      // Wrappers auditados (VULN-14). Son `action` que delegan en las funciones
+      // públicas originales; no añaden autorización ni la sustituyen.
+      "audited.ts:orgMembers": "auditedAction",
+      "audited.ts:orgInvite": "auditedAction",
+      "audited.ts:orgPendingInvites": "auditedAction",
+      "audited.ts:orgRevokeInvite": "auditedAction",
+      "audited.ts:orgRemoveMember": "auditedAction",
+      "audited.ts:orgAuditTrail": "auditedAction",
+      "audited.ts:jobsListByOrg": "auditedAction",
+      "audited.ts:jobsGet": "auditedAction",
+      "audited.ts:jobsCreate": "auditedAction",
+      "audited.ts:jobsClose": "auditedAction",
+      "audited.ts:applicationsListByJob": "auditedAction",
+      "audited.ts:applicationsDecide": "auditedAction",
+      "audited.ts:applicationsAddNote": "auditedAction",
+      "audited.ts:applicationsNotesFor": "auditedAction",
+      "audited.ts:applicationsInitUpload": "auditedAction",
+      "audited.ts:applicationsFinalizeUpload": "auditedAction",
+      "audited.ts:matchesGetForApplication": "auditedAction",
       // users (template)
       "users.ts:currentUser": "query", // pública, devuelve null sin sesión (template, READ-ONLY)
       // candidates — candidata: requireSelf + ownership en cada recurso
@@ -310,7 +336,7 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
     const found = new Set<string>();
     for (const { file, code } of allConvexSources()) {
       if (file.startsWith("lib") || file.startsWith("auth") || file === "auth.ts" || file === "http.ts" || file === "schema.ts") continue;
-      const re = /export const (\w+)\s*=\s*(mutation|query|action|internalMutation|internalQuery)\s*\(/g;
+      const re = /export const (\w+)\s*=\s*(mutation|query|action|internalMutation|internalQuery|auditedAction)\s*\(/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(code)) !== null) {
         const key = `${file}:${m[1]}`;

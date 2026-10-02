@@ -89,6 +89,19 @@ else
   RESULTS+=("PASS  cobertura de auditoría de denegaciones  [$COV_OUT]")
 fi
 
+echo
+echo "########## probe de secretos (regresión) ##########"
+# Guard de secretos en el CÓDIGO: patrones de claves literales, tokens asignados
+# a variables y PII en logs. Se ejecuta como paso nombrado para que su resultado
+# quede explícito en el resumen (antes iba dentro de unit+static+integration).
+SECRETS_OUT=$(bunx vitest run tests/static/dataLeakage.test.ts 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E "Tests +[0-9]" | tail -1 | sed 's/^ *//')
+if echo "$SECRETS_OUT" | grep -q "failed"; then
+  RESULTS+=("FAIL  probe de secretos (clave literal / token asignado / PII en logs)  [$SECRETS_OUT]")
+  FAILED=1
+else
+  RESULTS+=("PASS  probe de secretos (0 hallazgos en src/ y tests/)  [$SECRETS_OUT]")
+fi
+
 EVENTS_OUT=$(bunx convex data securityEvents --limit 10000 2>&1 | grep -c '^"')
 RESULTS+=("INFO  securityEvents rows  → $EVENTS_OUT")
 

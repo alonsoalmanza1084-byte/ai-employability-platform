@@ -164,10 +164,32 @@ empleado puede dejar la empresa y seguir usando el producto como candidato).
 ## 5. Cómo reproducir
 
 ```bash
-bunx vitest run tests/integration/rbac.seed.integration.test.ts   # fase 1
-bash scripts/rbac_seed_memberships.sh                            # fase 2
-bunx vitest run tests/integration/rbac.matrix.integration.test.ts # fase 3
+# CADENA COMPLETA (recomendado): org FRESCA por ejecución.
+bash scripts/rbac_e2e.sh
+#   fase 1  rbac.seed            → 1/1   (identidades + org nueva)
+#   fase 2  rbac_seed_memberships→ MEMBERSHIPS_SEEDED=2 (idempotente)
+#   fase 3  rbac.matrix          → 18/18
+#   fase 4  vuln14.denial.audit  → 25/25
+#   salida: RBAC_E2E=PASS
 ```
+
+**Por qué una org fresca y no reutilizar el manifiesto:** `LIMITS.jobCreatePerDay
+= 20` (por usuario y organización y día) es una cuota de PRODUCCIÓN. Repetir la
+matriz muchas veces sobre la misma org la agota y `jobs.create` empieza a fallar
+para `org_admin`. Eso NO es un fallo de autorización: es el límite funcionando.
+`rbac_e2e.sh` siembra una org nueva (contadores a 0) en cada ejecución.
+
+**Independencia entre suites (verificada):** la matriz RBAC y el test VULN-14 se
+ejecutan sobre el mismo manifiesto y ambos revocan/restablecen membresías. Las dos
+suites son autosuficientes: la matriz restablece en su `beforeAll` y VULN-14 antes
+de su escenario de revocación. Comprobado en los dos órdenes:
+`43 passed (43)` ejecutando ambos ficheros (matriz→V14 y V14→matriz).
+
+**Revocación exhaustiva (VULN-18):** `orgs.removeMember` borra **todas** las
+filas de membresía del par (org, usuario), no solo la primera. El índice
+`by_org_user` no es único en Convex, así que un restore puede dejar duplicados;
+con un único `delete` el usuario conservaba acceso (bypass observado en la
+matriz). La siembra de fixtures es idempotente para no crear ese estado.
 
 Los manifiestos viven en `/tmp` (fuera del repo) porque contienen tokens de
 sesión sintéticos.

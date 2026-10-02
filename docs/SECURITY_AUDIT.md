@@ -7,7 +7,7 @@
 > fichero sobrescribió por error las 607 líneas de las auditorías #4 y #5 en
 > lugar de anexar al final. Git está bloqueado en el entorno, por lo que no fue
 > posible restaurarlas. Este documento es una **reconstrucción consolidada**: el
-> registro de vulnerabilidades (VULN-01…VULN-14), su severidad, su estado y su
+> registro de vulnerabilidades (VULN-01…VULN-18), su severidad, su estado y su
 > evidencia se han preservado íntegros a partir de los hallazgos ejecutados. Lo
 > que se ha perdido es la prosa de las auditorías anteriores, no ningún hallazgo,
 > ninguna severidad ni ninguna evidencia.
@@ -32,6 +32,8 @@
 | **VULN-14** | **HIGH** | Las denegaciones de **autorización** no dejaban `securityEvent` (siguen lanzando) | **CORREGIDO y VERIFICADO** (25/25) |
 | **VULN-15** | **LOW** | Cobertura de auditoría: las funciones originales siguen siendo públicas, así que su denegación se registra solo si se invocan por `api.audited.*` | **ABIERTO (cobertura, no autorización)** |
 | **VULN-16** | **INFO** | Denegaciones por argumentos inválidos no generan evento: el validador de Convex actúa antes del handler | **ABIERTO (limitación de plataforma, no expone datos)** |
+| **VULN-17** | **LOW** | El JWT ya emitido sigue siendo aceptado tras `deleteAccount` hasta su expiración (sin acceso a datos, verificado) | **ABIERTO (residual de token)** |
+| **VULN-18** | **MEDIUM** | `removeMember` borraba solo la primera fila de membresía: con filas duplicadas (restore/import) el usuario conservaba acceso | **CORREGIDO y VERIFICADO** |
 
 ---
 
@@ -393,6 +395,80 @@ desaconseja: amplía superficie pública para cubrir un caso sin contenido.
 
 ---
 
+## 8-quinquies. VULN-17 — LOW — El JWT sobrevive a `deleteAccount` hasta su expiración
+
+**Hallazgo (MEDIDO, no supuesto).** Tras `account.deleteAccount`, el token ya
+emitido sigue siendo aceptado por el backend hasta que expira. La prueba E2E
+`tests/integration/accountDeletion.integration.test.ts` imprime
+`DELETION_TOKEN_PROBE <userId>`: el valor devuelto es **el propio `userId`**, es
+decir, el token autentica como el usuario borrado.
+
+**Qué SÍ se revoca (verificado por tabla contra la base de datos real):**
+`candidateProfiles`, `resumes`, `resumeVersions`, `authAccounts`,
+`authSessions` y `organizationMembers` del sujeto desaparecen; el binario del CV
+desaparece de `_storage`; la identidad queda anonimizada
+(`@deleted.invalid` + `[cuenta-eliminada]`).
+
+**Qué NO se revoca:** la firma del JWT ya emitido. La revocación de sesión de
+Convex Auth se apoya en borrar las filas de sesión, pero un JWT autocontenido
+sigue siendo válido mientras su `exp` no pase.
+
+**Por qué es LOW y no HIGH:** el token residual **no da acceso a ningún dato** —
+comprobado en el mismo test: `candidates.myProfile → null`,
+`candidates.myResumes → []`, `orgs.myOrgs → []`. No hay membresías, ni perfil,
+ni CVs, ni binarios. Lo único posible es crear datos nuevos como ese usuario ya
+anonimizado (que además tiene un email no enrutable).
+
+**Remediación** (una de las dos, ambas baratas):
+
+1. Reducir el TTL del access token (p. ej. 15 min) con refresh token; el residual
+   pasa a ser de minutos.
+2. Validar la existencia de la fila en `authSessions` en cada petición
+   autenticada (coste: una lectura por request).
+
+**Estado: OPEN (LOW).** Está en la matriz de production readiness como blocker 12.
+
+---
+
+## 8-sexies. VULN-18 — MEDIUM — Revocación incompleta con filas duplicadas (CORREGIDO)
+
+**Hallazgo (encontrado al hacer la matriz E2E, no por inspección).** El índice
+`by_org_user` de `organizationMembers` **no es único** en Convex (Convex no
+tiene constraints únicos). Un restore —o el propio import de fixtures de la
+suite— puede dejar **dos filas** para el mismo par (org, usuario).
+
+`orgs.removeMember` leía `.first()` y borraba **solo esa fila**. Medido en la
+base real: tras la revocación quedaba una fila de `recruiter` viva, el usuario
+**conservaba todo el acceso** con la misma sesión, y fue visible como fallo de
+la matriz de denegaciones (`revocado→orgMembers debía estar denegado`).
+
+**Impacto:** bypass de revocación de acceso — un ex-miembro mantiene permisos de
+org (lectura de candidatos y escritura de notas/decisiones) hasta que se cierre
+su sesión. Severidad MEDIUM (requiere el estado duplicado, típicamente posterior
+a un restore, y afecta a un usuario concreto).
+
+**Corrección (implementada y verificada):**
+
+- `removeMember` borra **todas** las filas del par (org, usuario) con un bucle
+  acotado (`REVOKE_MAX_ROWS = 50`), releyendo por índice fila a fila — **sin
+  `.collect()`**, para no introducir una lectura sin acotar. Si el techo se
+  alcanzara, la mutación **falla** (`REVOCACION_INCOMPLETA`) en lugar de
+  anunciar una revocación parcial: fail-closed.
+- La siembra de fixtures es **idempotente** (`scripts/rbac_seed_memberships.sh`
+  y `seedMembership()` del test) para que la propia suite no pueda provocar el
+  estado duplicado.
+- El guard estático `tests/static/api_surface.test.ts` ahora exige el bucle, el
+  techo, el fallo explícito y la ausencia de `.collect()` en `removeMember`,
+  de modo que una regresión a un único `delete` rompe el gate.
+
+**Evidencia ejecutada:** matriz de revocación E2E (18/18) + VULN-14 (25/25) en la
+misma org, con el estado residual del escenario de revocación
+(`bash scripts/rbac_e2e.sh` → `RBAC_E2E=PASS`).
+
+**Estado: CORREGIDO y VERIFICADO.**
+
+---
+
 ## 9. Matriz de controles — estado final (auditoría #6)
 
 **VERIFIED** = implementación real + test reproducible + ejecución real + PASS + evidencia conservada.
@@ -415,15 +491,18 @@ desaconseja: amplía superficie pública para cubrir un caso sin contenido.
 | **Security events (autorización)** | **VERIFIED** | `AUTHORIZATION_DENIAL_AUDIT=PERSISTED`, `DELTA=2`; matriz `vuln14.denial.audit` **25/25**; guard `auditCoverage` **6/6** |
 | Security events (cobertura) | **PARTIAL — VULN-15** | Las originales (`api.orgs.*`…) deniegan **sin registrar**. La autorización NO se debilita: es un hueco de trazabilidad | No (LOW) |
 | Security events (args inválidos) | **OPEN — VULN-16** | El validador de Convex actúa antes del handler. Sin fuga de datos ni acceso a lógica de negocio | No (INFO) |
+| **Revocación de membresía (exhaustiva)** | **VERIFIED** | **VULN-18 CORREGIDO**: `removeMember` borra todas las filas del par (bucle acotado, fail-closed); matriz de revocación 18/18 + guard estático reforzado |
 | Audit log | **VERIFIED** | `gates.integration.test.ts` GATE H |
 | Rate limiting (identidad/org/acción) | **VERIFIED** | `gates.integration.test.ts` GATE I |
 | **Rate limiting pre-auth por IP** | **BLOCKED_BY_PLATFORM** | IP no falsificable pero inalcanzable; `tests/edge/rateLimit.contract.test.ts` **falla a propósito** sin `EDGE_BASE_URL` |
-| Secrets (en el código) | **VERIFIED** | 0 coincidencias en `src/`, `tests/`, `docs/`, `dist/` |
+| **Cuenta y borrado de datos (P2)** | **VERIFIED (borrado)** | `accountDeletion.integration.test.ts`: precondición + borrado real de perfil/CVs/binario/membresías/`authAccounts`/`authSessions` verificado en la BD; sin sobre-borrado; sin resurrección |
+| **Sesión después de `deleteAccount`** | **OPEN — VULN-17** | El JWT emitido sigue aceptándose hasta expirar; **sin acceso a datos** (`myProfile` null, `myResumes` [], `myOrgs` []) | No (LOW) |
+| Secrets (en el código) | **VERIFIED** | 0 coincidencias en `src/`, `tests/`, `docs/`, `dist/` (`tests/static/dataLeakage.test.ts` «ningún archivo contiene un secreto literal») |
 | **Secrets (rotación)** | **ROTATION_REQUIRED** | VULN-11 |
-| Backups (mecanismo) | **VERIFIED** | `BACKUP_VERIFY=PASS` · 26 tablas · 362 binarios · 11/11 |
-| Restore (mecanismo) | **VERIFIED** | `DRILL=PASS` · 1.101 filas · sha256 e IDs idénticos |
-| **Restore en deployment limpio** | **BLOCKED_BY_PLATFORM** | `convex deployment create` falla con deploy key |
-| RTO (ámbito tabla, mismo deployment) | **MEASURED = 17.071 ms** | 2.668 + 9.255 + 5.148 ms |
+| Backups (mecanismo) | **VERIFIED** | `BACKUP_VERIFY=PASS` · 26 tablas · 11/11 tests de integridad (2026-10-02) |
+| Restore (mecanismo) | **VERIFIED** | `DRILL=PASS` · `RESTORE_ROWS=1865` · sha256 e IDs idénticos (2026-10-02) |
+| **Restore en deployment limpio** | **BLOCKED_BY_PLATFORM** | `convex deployment create` falla con deploy key; `scripts/restore_full_drill.sh` listo y **bloquea en exit 2** sin destino |
+| RTO (ámbito tabla, mismo deployment) | **MEASURED = 19.889 ms** | backup 3.040 + pérdida 10.712 + restore 6.137 ms |
 | **RTO (deployment completo)** | **NOT_MEASURED** | bloqueado por la deploy key |
 | **RPO** | **NOT_DEFINED** | el objetivo de negocio no existe; no se inventa |
 | Backups automáticos / retención / offsite | **NOT_DEFINED** | sin scheduler, sin copia externa, sin cifrado definido |
@@ -450,16 +529,16 @@ gobierno: no hay WAF para el abuso pre-auth, la credencial no está rotada, no h
 política operativa de backups con RPO/RTO de negocio, no hay observabilidad, y no
 existe un pipeline de CI/CD ni una configuración de producción verificados.
 
-**VULN-14 está cerrado.** Las denegaciones de autorización quedan registradas y
-la autorización sigue siendo obligatoria: el error se relanza siempre. Lo que
-queda abierto en materia de auditoría es de **cobertura** (VULN-15, LOW) y de
-**limitación de plataforma** (VULN-16, INFO); ninguna de las dos afecta al
-control de acceso.
-
-**VULN-14 está cerrado.** Las denegaciones de autorización quedan registradas y
-la autorización sigue siendo obligatoria. Lo que queda abierto en materia de
-auditoría es de **cobertura** (VULN-15, LOW) y de **limitación de plataforma**
-(VULN-16, INFO), ninguna de las dos con impacto en el control de acceso.
+**VULN-14 está cerrado** (implementación + matriz 25/25 + guard 6/6 +
+`AUTHORIZATION_DENIAL_AUDIT=PERSISTED`): las denegaciones de autorización quedan
+registradas y la autorización sigue siendo obligatoria — el error se relanza
+siempre. En el mismo cierre se corrigió **VULN-18 (MEDIUM)**, un bypass de
+revocación real: `removeMember` borraba una sola fila de membresía y un restore
+podía dejar filas duplicadas que mantenían el acceso. Queda abierto, sin impacto
+en el control de acceso: **VULN-15** (cobertura de la traza, LOW),
+**VULN-16** (argumentos inválidos rechazados por el validador, INFO) y
+**VULN-17** (el JWT emitido sobrevive a `deleteAccount` hasta expirar; el token
+no da acceso a ningún dato, LOW).
 
 Compilar, pasar los tests y tener el build verde **no es production ready**: es
 una señal de ausencia de regresiones. Convertir un `BLOCKED`, un `NOT_MEASURED` o

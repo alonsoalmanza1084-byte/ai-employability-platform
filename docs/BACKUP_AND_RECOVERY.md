@@ -113,6 +113,36 @@ $ bunx convex deployment create restore-drill
 de negocio. Perderla no borra documentos de usuario; el drill la restaura en el
 acto y el sha256 final lo demuestra.
 
+### 3-bis. Restore COMPLETO en deployment limpio — script preparado
+
+`scripts/restore_full_drill.sh` implementa el paso que falta: export completo
+(datos + binarios) → import de **todas** las tablas en un deployment de destino
+vacío → re-export del destino y comparación **fila a fila y sha256 por tabla**.
+
+No se puede ejecutar hoy (falta un deployment de destino: `convex deployment
+create` no está permitido con deploy key), pero **el script no simula el
+resultado**:
+
+```
+$ bash scripts/restore_full_drill.sh
+RESTORE_FULL=BLOCKED_BY_PLATFORM       # exit 2, NUNCA un PASS
+REASON=missing_restore_target
+MISSING=RESTORE_TARGET_URL RESTORE_TARGET_ADMIN_KEY
+UPSTREAM_BLOCK=convex_deployment_create_unsupported_with_deploy_key
+```
+
+Cuando el operador disponga de credenciales de PROYECTO:
+
+```bash
+RESTORE_TARGET_URL=https://<destino>.convex.cloud \
+RESTORE_TARGET_ADMIN_KEY=<admin key> \
+  bash scripts/restore_full_drill.sh     # 0 → RESTORE_FULL=PASS; 1 → FAIL
+```
+
+Códigos de salida: `0` PASS verificado · `2` BLOQUEADO por plataforma (nunca
+PASS) · `1` el restore se intentó y **no** cuadró. Antes de importar comprueba
+que el destino está vacío: un restore sobre datos existentes no probaría nada.
+
 ---
 
 ## 4. Verificación de integridad (suite ejecutable)
@@ -137,7 +167,7 @@ acto y el sha256 final lo demuestra.
 | Métrica | TARGET | ASSUMPTION | MEASURED | Status |
 |---|---|---|---|---|
 | **RPO** (dato máximo aceptable perdido) | **NO DEFINIDO** — falta el objetivo de negocio | Ninguna: no se inventa un número | No medido | **NOT_DEFINED** |
-| **RTO** a nivel de **tabla**, mismo deployment | — | Ninguna | **17.071 ms** (run anterior) / **39.291 ms** (run de cierre: 2.756 + 36.535) | **MEASURED (ámbito limitado)** |
+| **RTO** a nivel de **tabla**, mismo deployment | — | Ninguna | **17.071 ms** / **39.291 ms** (2.756 + 36.535) / **19.889 ms** (2026-10-02: 3.040 + 10.712 + 6.137) — dispersión 17 s–39 s | **MEASURED (ámbito limitado)** |
 | **RTO** a nivel de **deployment completo** | **NO DEFINIDO** — falta el objetivo de negocio | "Un restore completo son minutos" — **NO VERIFICADO** | No medible | **NOT_MEASURED / BLOCKED_BY_PLATFORM** |
 
 ### Lo que sí está medido (ejecutado, no estimado)
@@ -148,7 +178,7 @@ bash scripts/backup_restore_drill.sh
 
 ```
 BACKUP_SHA256=d83a9466dde5f7310d54036a551bc07d30c83cf60c852bbbdb7a3e628ca80ca0
-RESTORE_ROWS=1406
+RESTORE_ROWS=1406   # runs anteriores; 2026-10-02 → RESTORE_ROWS=1865
 ID_SET_SHA256=(conjunto de IDs idéntico antes y después)
 SCOPE=table_level_same_deployment
 BACKUP_DURATION_MS=2756
@@ -164,9 +194,13 @@ re-ejecución del export; **la dispersión demuestra por qué no se puede
 declarar un RTO con una sola medición.**
 
 **Este número NO es el RTO de producción.** Es el tiempo de ciclo de una tabla
-de 1.101 filas dentro del mismo deployment. Un restore completo incluye 26
+de 1.865 filas (2026-10-02) dentro del mismo deployment. Un restore completo incluye 26
 tablas, 362 binarios, la reconstrucción del deployment y la reconfiguración de
 secretos. Publicar 17 s como RTO sería una falsificación.
+
+La **dispersión** de las mediciones (17.071 ms, 39.291 ms y 19.889 ms en tres
+runs) es, por sí sola, la razón por la que no se puede declarar un RTO: sin
+suficientes muestras y sin el ámbito completo, el dato no es un objetivo.
 
 ### Por qué el restore completo no se ha medido
 

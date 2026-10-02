@@ -1,6 +1,6 @@
 # PRODUCTION_READINESS.md — Veredicto final de production readiness
 
-**Fecha:** 2026-10-01 · **Deployment auditado:** `hip-porpoise-838` (**staging**)
+**Fecha:** 2026-10-02 (cierre de la sesión de auditoría #6) · **Deployment auditado:** `hip-porpoise-838` (**staging**)
 **Veredicto: `PRODUCTION READY = NO`**
 
 Este documento se deriva **solo de evidencia ejecutada**. Nada se declara
@@ -18,15 +18,22 @@ end-to-end con seis identidades reales, determinismo del matching y defensa
 contra prompt injection en 8 de 11 vectores. 280 tests verdes, typecheck limpio,
 build correcto.
 
-Sin embargo, **cinco condiciones anteriores son de infraestructura y de
-gobierno, y ninguna depende del código**:
+**VULN-14 (auditoría de denegaciones de autorización) quedó CERRADO en esta
+sesión** con implementación + test + ejecución + evidencia conservada:
+`AUTHORIZATION_DENIAL_AUDIT=PERSISTED`, matriz 25/25, guard estático 6/6.
+En el mismo cierre se corrigió un bypass de revocación real
+(`removeMember` con filas duplicadas, ver VULN-18).
+
+Sin embargo, siguen en pie condiciones de **infraestructura, gobierno y
+cobertura** que ningún test puede cerrar:
 
 1. **No existe WAF/CDN** → el abuso pre-auth por IP no tiene control real.
 2. **La credencial de correo no está rotada** y `VLY_EMAIL_API_KEY` no existe.
-3. **Las denegaciones de autorización no son auditables** (VULN-14, abierto).
+3. **Cobertura del rastro de denegaciones** (VULN-15, LOW): las funciones
+   originales siguen públicas y deniegan sin registrar; la UI las usa.
 4. **No hay política operativa de backups** (frecuencia, retención, offsite,
-   cifrado) ni RPO/RTO de negocio definido.
-5. **No hay observabilidad** ni pipeline de CI/CD real.
+   cifrado) ni RPO/RTO de negocio definido, ni restore completo verificado.
+5. **No hay observabilidad operativa** ni pipeline de CI/CD real.
 
 Además, el restore completo en un deployment limpio está **bloqueado por la
 plataforma** (no se puede crear un deployment con una deploy key) y el RPO/RTO a
@@ -60,7 +67,8 @@ Pasar 280 tests no es production ready. Es no tener regresiones.
 | **RTO** | **NOT_MEASURED** (parcial) | Medido **17.071 ms** a nivel de tabla (backup 2.668 + pérdida simulada 9.255 + restore 5.148). **Escala completa: no medible sin deploy key** | **Sí** |
 | **Observability** | **NOT_VERIFIED** | `securityEvents` no tiene ninguna query pública (solo lectura por CLI). Sin métricas, alertas, ni logs centralizados | **Sí** |
 | **CI/CD** | **PARTIAL** | `scripts/ci_gate.sh` → `CI_GATE=PASS`, pero **no existe pipeline** (sin `.github/`, sin YAML, sin Dockerfile, sin `vercel.json`) | **Sí** |
-| **Production config** | **NOT_VERIFIED** | Staging no es evidencia de producción. Checklist en `docs/OPERATIONS.md` | **Sí** |
+| **Production config** | **NOT_VERIFIED** | Staging no es evidencia de producción. Checklist en `docs/OPERATIONS.md` y `docs/PRODUCTION_CHECKLIST.md` | **Sí** |
+| **Cuenta y borrado de datos (P2)** | **VERIFIED** (borrado) / **NOT_DEFINED** (retención) | `accountDeletion.integration.test.ts`: precondición + perfil + CVs + binario + membresías + `authAccounts`/`authSessions` borrados y verificados en la BD real; sin sobre-borrado; sin resurrección. Residual medido (VULN-17): el JWT emitido sigue aceptándose hasta expirar. Retención programada: **NOT_DEFINED** | Parcial (retención) |
 
 ---
 
@@ -84,6 +92,19 @@ Pasar 280 tests no es production ready. Es no tener regresiones.
 | `bun run lint` | `22 problems (3 errors, 19 warnings)`; `scripts/lint_gate.mjs` → `TEMPLATE=3 OWN=0` |
 | `bun run build` | `✓ built in 8.02s` |
 | `bash scripts/ci_gate.sh` | `CI_GATE=PASS (con BLOCKERS declarados)` — declara `BLOCKER pre-auth abuse por IP`; VULN-14 pasa a `PASS` |
+| `bash scripts/rbac_e2e.sh` (**nuevo**, 2026-10-02) | `RBAC_E2E=PASS` — fase 1 (org fresca) 1/1 · fase 2 `MEMBERSHIPS_SEEDED=2` · fase 3 matriz RBAC **18/18** · fase 4 VULN-14 **25/25** |
+| `bunx vitest run tests/integration/rbac.matrix... vuln14...` (ambos ficheros) | `43 passed (43)` — independencia de orden verificada (V14→matriz y matriz→V14) |
+| `bunx vitest run tests/integration/accountDeletion.integration.test.ts` (**nuevo**) | `Tests 1 passed (1)` — borrado real verificado en BD + anti-resurrección + no sobre-borrado; `DELETION_TOKEN_PROBE` = el `userId` (residual de JWT, VULN-17) |
+| `node scripts/lint_gate.mjs` | `TEMPLATE=3 OWN=0 FILES=-` · exit 0 |
+| `bunx vitest run` (suite principal, sin golden/edge/fixtures/recovery) | `Test Files 14 passed \| 1 skipped (15)` · `Tests 275 passed \| 25 skipped (300)` (los 25 skipped son la matriz VULN-14 cuando falta el manifiesto en `/tmp/tf`) |
+| `bunx vitest run tests/static tests/unit/invitations.security.test.ts` | `73 passed (73)` — guard reforzado de `removeMember` incluido |
+| `bash scripts/backup_verify.sh` (2026-10-02) | **`BACKUP_VERIFY=PASS`** · 11/11 tests de integridad |
+| `bash scripts/backup_restore_drill.sh` (2026-10-02) | **`DRILL=PASS`** · `RESTORE_ROWS=1865` · backup 3.040 ms · pérdida 10.712 ms · restore 6.137 ms · total 19.889 ms · sha256 e IDs idénticos |
+| `bash scripts/restore_full_drill.sh` (**nuevo**) | `RESTORE_FULL=BLOCKED_BY_PLATFORM` · exit **2** (sin destino) — nunca emite PASS |
+| `bash scripts/verify_audit_denial_semantics.sh` (2026-10-02) | **`AUTHORIZATION_DENIAL_AUDIT=PERSISTED`** |
+| `bunx vitest run tests/golden/ai.security.eval.test.ts` (2026-10-02) | `10 passed` · `GOLDEN_COVERAGE ready=8/11 blocked_upstream=[direct_injection, system_prompt_extraction, combined_attack]`; `fake_skill`/`fake_years` puntúan 25 (Δ = −58) |
+| `bunx vitest run tests/edge/rateLimit.contract.test.ts` (2026-10-02) | **`1 failed \| 3 skipped`** — ROJO DELIBERADO |
+| `bunx convex data organizationMembers --limit 10000` | Evidencia del defecto VULN-18: el import de fixtures creaba filas duplicadas y `removeMember` borraba solo la primera → **revocación incompleta** observada. Ya corregido y bloqueado por guard |
 | `bunx convex env list` | Presentes: `JWT_PRIVATE_KEY`, `JWKS`, `SITE_URL`, `VLY_APP_NAME`, `VLY_CONVEX_AUTH_ISSUER`, `VLY_INTEGRATION_BASE_URL`, `VLY_INTEGRATION_KEY`. **Ausentes: `VLY_EMAIL_API_KEY`, `OPENAI_API_KEY`** |
 | `bunx convex deployment create` | FALLA: `isn't supported with a deploy key (CONVEX_DEPLOY_KEY)` |
 
@@ -99,7 +120,7 @@ sigue sin verificar.
 |---|---|---|---|
 | **1** | CDN/WAF delante de Convex con control de IP, reputation, burst, bot y enumeración de email. Contrato E-1…E-7 en `tests/edge/rateLimit.contract.test.ts` | Infraestructura | Plataforma / Seguridad |
 | **2** | Rotar la clave expuesta (VULN-11) y configurar `VLY_EMAIL_API_KEY` en el deployment | Operador | Plataforma |
-| **3** | ~~Corregir VULN-14~~ — **CERRADO**. Queda VULN-15 (LOW): migrar los 15 call sites de la UI a `api.audited.*` y mover las originales a `internal` para cerrar la cobertura | Código | Backend |
+| **3** | ~~Corregir VULN-14~~ — **CERRADO** (implementación + 25/25 + guard 6/6 + `DELTA=2`). Queda **VULN-15 (LOW)**: los 15 call sites de la UI siguen usando `api.orgs.*`/`api.jobs.*`/… (deniegan igual, pero **sin evento**). Remediar migrando la UI a `api.audited.*` y moviendo las originales a `internal` | Código | Backend |
 | **4** | Backup **automático** con frecuencia, **retención**, copia **offsite** y **cifrado**, y verificación periódica de los sha256 | Operativa | SRE / Operaciones |
 | **5** | **RPO y RTO acordados con negocio** y medidos en un restore completo | Gobierno + Plataforma | Producto / Operaciones |
 | **6** | Observabilidad mínima operativa: eventos, severidad, umbral, owner, respuesta | Observabilidad | SRE |
@@ -107,13 +128,15 @@ sigue sin verificar.
 | **8** | Configuración de producción verificada (dominio, cookies, CSP, CORS, storage, alerting) | Configuración | Plataforma |
 | **9** | Restore completo probado en un deployment limpio (requiere project key) | Plataforma | Plataforma |
 | **10** | Diversidad de proveedor de IA (`OPENAI_API_KEY`) o aceptación formal de que la seguridad de IA solo está verificada para un modelo concreto | Decisión | CTO |
-| **11** | Política de retención de datos definida con requisitos legales | Legal / Producto | Legal |
+| **11** | Política de retención de datos definida con requisitos legales (incluye `securityEvents`/`auditLog`/CVs de aplicaciones) | Legal / Producto | Legal |
+| **12** | **VULN-17 (LOW, medido)**: tras `deleteAccount`, el JWT ya emitido sigue siendo aceptado hasta su expiración (la revocación es de DATOS, no de token). Verificado que ese token no da acceso a ningún dato (perfil `null`, CVs `[]`, orgs `[]`). Remediar con TTL de access token corto y/o validación de `authSessions` por petición | Código / Plataforma | Backend |
+| **13** | Restore completo de **toda** la base en un deployment limpio, con comparación de filas y sha256 por tabla (`scripts/restore_full_drill.sh` está listo y bloquea en exit 2 sin destino) | Plataforma | Plataforma |
 
 ---
 
 ## 5. Condición para convertir este `NO` en `YES`
 
-Bastaría con que **los 11 puntos de la sección 4** estén implementados **y
+Bastaría con que **los 13 puntos de la sección 4** estén implementados **y
 verificados con ejecución real y evidencia conservada**. No hay atajos: ninguno
 puede cerrarse leyendo código, y ninguno se cierra declarándolo.
 

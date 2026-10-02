@@ -146,13 +146,24 @@ Para poder pasar de `NOT_DEFINED` / `NOT_VERIFIED` a algo verificable:
 | 7 | `VLY_EMAIL_API_KEY` en el deployment | Seguridad | Login por email roto |
 | 8 | Segunda **credencial de proveedor IA** | Plataforma | Provider diversity no verificable |
 | 9 | Budget y umbrales de **coste de IA** | Negocio | Alerta de coste imposible de definir |
-| 10 | Aceptación formal del **RTO medido a nivel de tabla (17.071 ms)** frente al RTO de deployment completo, aún sin medir | Negocio + SRE | El único dato medido no es utilizable como objetivo |
+| 10 | Aceptación formal del **RTO medido a nivel de tabla (17.071 / 39.291 / 19.889 ms, dispersión 17 s–39 s)** frente al RTO de deployment completo, aún sin medir | Negocio + SRE | El único dato medido no es utilizable como objetivo; la dispersión lo confirma |
+| 11 | Permiso para ejecutar `scripts/restore_full_drill.sh` contra un deployment de destino (o credenciales de proyecto) | Plataforma | Restore completo: `BLOCKED_BY_PLATFORM`, exit 2 |
 
 ---
 
 ## 6. Auditoría de denegaciones de autorización — `VULN-14 CERRADO`
 
-Actualizado en el cierre del production gate.
+Actualizado en el cierre del production gate (2026-10-02).
+
+### Suites E2E con estado (cómo se ejecutan)
+
+```bash
+bash scripts/rbac_e2e.sh        # org fresca → 18/18 RBAC + 25/25 VULN-14 (RBAC_E2E=PASS)
+bash scripts/backup_verify.sh          # BACKUP_VERIFY=PASS
+bash scripts/backup_restore_drill.sh   # DRILL=PASS (ámbito de tabla)
+bash scripts/restore_full_drill.sh     # BLOCKED (exit 2) hasta tener destino
+bash scripts/ci_gate.sh                # CI_GATE=PASS (con blockers declarados)
+```
 
 ### Lo que se registra
 

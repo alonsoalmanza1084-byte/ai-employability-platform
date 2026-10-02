@@ -132,22 +132,66 @@ Internet
 4. Allowlist para rangos corporativos legítimos.
 5. Logs de 429 retenidos para auditoría.
 
-### 3.3 Tests de contrato (ejecutables en cuanto exista el edge)
+### 3.3 Contrato formal E-1…E-7 (diseño completo, ejecutable en cuanto exista el edge)
 
-Implementados como especificación en `tests/edge/rateLimit.contract.test.ts`
-(saltan con `NOT EXECUTED` mientras no haya edge):
+Especificación implementada en `tests/edge/rateLimit.contract.test.ts` (salta con
+`NOT EXECUTED` mientras no haya edge; el archivo FALLA a propósito sin
+`EDGE_BASE_URL`, para que nadie declare el control cerrado por omisión).
 
-| # | Ataque | Resultado esperado |
-|---|---|---|
-| E-1 | 5 IPs distintas × 5 OTP al mismo email | 429 a partir de la 6.ª (control por email) |
-| E-2 | 1 IP × 201 OTP a emails distintos | 429 en la 201.ª (tope global) |
-| E-3 | 1 IP × 25 POST `/api/auth/*` en 1 min | 429 a partir de la 21.ª |
-| E-4 | `X-Forwarded-For: 1.2.3.4` falsificado | **NO** evade el límite |
-| E-5 | Legítimo: 1 IP × 10 OTP | 200 en todos, sin falsos positivos |
-| E-6 | Rotación de `Authorization` con el mismo token | 429/401, sin bypass |
-| E-7 | Dos regiones detrás de la misma IP (NAT corporativo) | comportamiento documentado y aceptable |
+Cada caso fija los cinco elementos exigibles: **ataque**, **superficie**,
+**clave del contador**, **umbral/ventana** y **respuesta + telemetría esperada**.
 
-### 3.4 Checklist de despliegue
+| # | Ataque | Superficie | Clave del contador | Umbral / ventana | Respuesta esperada | Telemetría esperada |
+|---|---|---|---|---|---|---|
+| E-1 | 5 IPs distintas × 5 OTP al MISMO email | `POST *.convex.cloud/api/action` (`auth.signIn`) | `email` normalizado | 5/hora (app) + 5/hora (edge por email) | 429 en la 6.ª, `Retry-After` presente | `rate_limit_denied{key=email}` con hash del email, nunca el email |
+| E-2 | 1 IP × 201 OTP a emails DISTINTOS (rotación) | idem | `ip` + tope global `email:*` | 200/hora global (`OTP_GLOBAL_HOURLY_CAP`) | 429 en la 201.ª; el 429 NO distingue "email no existe" | `rate_limit_denied{key=global}` + conteo de destinatarios distintos |
+| E-3 | 1 IP × 25 POST `/api/auth/*` en 1 min | `*.convex.site/api/auth/*` | `ip` | 20/min/IP | 429 a partir de la 21.ª, `Retry-After` = segundos restantes | `rate_limit_denied{surface=site,key=ip}` |
+| E-4 | `X-Forwarded-For: 1.2.3.4` (y `X-Real-IP`, `Forwarded`) falsificados | todas | `cf-connecting-ip` (real) | el del caso E-3 | **NO** evade: sigue contando la IP real | `spoof_attempt{header=x-forwarded-for}` (el valor inyectado se registra como intento, jamás como clave) |
+| E-5 | Legítimo: 1 IP × 10 OTP a emails distintos, bien espaciados | `POST *.convex.cloud/api/action` | `ip` | 600/min/IP | 200 en los 10, **sin falsos positivos** | `rate_limit_allowed` (contador, no log por request) |
+| E-6 | Rotación de `Authorization` con el mismo token | `POST *.convex.cloud/api/*` | `token-id` (claim `sub`/`jti`) | 60/min/sesión | 429/401 del edge; el token rotado NO resetea el contador | `rate_limit_denied{key=session}` + `auth_token_rotation` si GTE 3 `sub` distintos por `ip` |
+| E-7 | NAT corporativo: N usuarios legítimos detrás de 1 IP | todas | `ip` | el del caso correspondiente | Comportamiento **documentado**: el límite por IP puede generar falsos positivos compartidos; se mitiga con allowlist de rangos y con el límite por identidad (ya en la app) | `rate_limit_denied{key=ip, allowlisted=false}` con conteo de identidades distintas tras la IP |
+
+**Reglas transversales del contrato (aplican a E-1…E-7):**
+
+1. **429 uniforme**: mismo cuerpo y mismo `Retry-After` para "no existe" y
+   "limitado" (anti-enumeración de emails y de cuentas).
+2. **Estado compartido**: Redis/KV del edge, nunca memoria de instancia
+   (un límite in-memory no sobrevive a un despliegue multi-réplica y da
+   seguridad falsa).
+3. **Clave no sensible**: para emails se almacena hash, nunca el valor.
+4. **Fail-closed**: si el almacén de contadores cae, el edge **deniega** el
+   camino pre-auth (no lo deja abierto).
+5. **Sin relajación por reintento**: `Retry-After` no libera el contador antes de
+   su ventana.
+
+### 3.4 Middleware del edge — diseño de referencia
+
+```
+function edgeRateLimit(req): Decision
+  ip   = req.headers["cf-connecting-ip"]              // probado NO falsificable
+  // cabeceras falsificables: se IGNORAN como clave (solo se auditan)
+  if req.headers["x-forwarded-for"] && tuned  -> emit spoof_attempt
+
+  rules = [
+    { id: "sync",   match: /api\/(query|mutation|action)/, key: ip, limit: 600,  window: 60  },
+    { id: "auth",   match: /api\/auth\//,                   key: ip, limit: 20,   window: 60  },
+    { id: "site",   match: /\.convex\.site\/storage\//,     key: ip, limit: 300,  window: 60  },
+    { id: "session",match: /api\//,                          key: sub(jwt), limit: 60, window: 60 },
+  ]
+
+  for r in rules where r.match(req):
+    if !store.incr(r.key, r.window) <= r.limit:
+        emit rate_limit_denied{rule: r.id}
+        return 429 { "Retry-After": store.ttl(r.key) }   // SIN detalle del motivo
+  return next()
+```
+
+Puntos de integración obligatorios en el edge: `*.convex.cloud/api/*`
+(sincronía: signIn, queries, mutations, actions) y `*.convex.site/api/auth/*` +
+`*.convex.site/storage/*`. La sincronización WebSocket se limita aparte
+(10 conexiones/IP · 200 mensajes/min).
+
+### 3.5 Checklist de despliegue
 
 - [ ] CDN/WAF creado y apuntando al deployment
 - [ ] Reglas de rate limiting por IP aplicadas a las 4 superficies
@@ -158,7 +202,7 @@ Implementados como especificación en `tests/edge/rateLimit.contract.test.ts`
 - [ ] `tests/edge/rateLimit.contract.test.ts` sin `skip`
 - [ ] `docs/SECURITY_AUDIT.md` actualizado a VERIFIED
 
-### 3.5 Mecanismo de verificación
+### 3.6 Mecanismo de verificación
 
 ```bash
 EDGE_BASE_URL=https://<tu-waf>/  bunx vitest run tests/edge/rateLimit.contract.test.ts

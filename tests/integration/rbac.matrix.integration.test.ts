@@ -16,7 +16,8 @@
  * `allow()` exige que la operación funcione; `deny()` exige que NO funcione y
  * que además no devuelva datos.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ConvexHttpClient } from "convex/browser";
@@ -94,6 +95,36 @@ async function deny(fn: () => Promise<unknown>): Promise<string> {
 
 const READY = existsSync(MANIFEST) && !!CONVEX_URL;
 
+/**
+ * Restablece una membresía SOLO si falta (idempotente), por importación de
+ * datos — el mismo mecanismo de `scripts/rbac_seed_memberships.sh`.
+ *
+ * Hace falta porque `tests/integration/vuln14.denial.audit.integration.test.ts`
+ * revoca al recruiter en su escenario de revocación sobre el mismo manifiesto:
+ * sin este restablecimiento el resultado de esta matriz dependería del orden de
+ * ejecución. El índice `by_org_user` NO es único en Convex, así que el import se
+ * hace únicamente cuando no existe ninguna fila para el par (org, usuario).
+ */
+function ensureMembership(organizationId: string, userId: string, role: string): void {
+  const rows = execFileSync(
+    "bunx",
+    ["convex", "data", "organizationMembers", "--limit", "10000"],
+    { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
+  );
+  const present = rows
+    .split("\n")
+    .some((line) => line.includes(organizationId) && line.includes(userId));
+  if (present) return;
+
+  mkdirSync("/tmp/tf", { recursive: true });
+  const path = `/tmp/tf/rbac-membership-${userId}.jsonl`;
+  writeFileSync(path, JSON.stringify({ organizationId, userId, role }) + "\n");
+  execFileSync("bunx", ["convex", "import", "--table", "organizationMembers", "--append", "-y", path], {
+    encoding: "utf8",
+    stdio: "pipe",
+  });
+}
+
 describe.skipIf(!READY)("BLOQUE D — matriz RBAC end-to-end (sesiones reales)", () => {
   beforeAll(() => {
     M = JSON.parse(readFileSync(MANIFEST, "utf8")) as Manifest;
@@ -102,6 +133,12 @@ describe.skipIf(!READY)("BLOQUE D — matriz RBAC end-to-end (sesiones reales)",
       c.setAuth(M.actors[actor].token);
       clients[actor] = c;
     }
+    // Precondición AUTOSUFICIENTE: la matriz exige membresías activas de
+    // recruiter y hiring_manager, y tanto este test (escenario de revocación)
+    // como el test VULN-14 pueden haberlas revocado antes. Sin este paso la
+    // suite depende del orden de ejecución de los archivos.
+    ensureMembership(M.orgId, M.actors.recruiter.userId, "recruiter");
+    ensureMembership(M.orgId, M.actors.hiring_manager.userId, "hiring_manager");
   });
 
   // ── CONFIGURACIÓN (precondición verificada, no asumida) ────────────────

@@ -67,10 +67,10 @@ const NONEXISTENT_JOB_ID = "kx71g5d1yptpgcftpcgv0kyqnh8ff5a0";
  * el contador el contador se saturaba en 100 y hacía creer que los eventos no
  * se estaban escribiendo. Fue un error de MEDICIÓN, no del arreglo.
  */
-function convexData(): string {
+function convexData(table = "securityEvents"): string {
   return execFileSync(
     "bunx",
-    ["convex", "data", "securityEvents", "--limit", "10000"],
+    ["convex", "data", table, "--limit", "10000"],
     { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
   );
 }
@@ -105,6 +105,16 @@ async function seedMembership(
   userId: string,
   role: string,
 ): Promise<void> {
+  // IDEMPOTENTE: el índice `by_org_user` no es único en Convex, así que un
+  // import a ciegas crearía una SEGUNDA fila para el mismo par (org, usuario).
+  // Con dos filas, `removeMember` solo habría borrado una y la revocación
+  // habría fallado (falso negativo del test y, en producción, acceso residual).
+  // Solo importamos cuando realmente falta la membresía.
+  const already = convexData("organizationMembers")
+    .split("\n")
+    .some((line) => line.includes(organizationId) && line.includes(userId));
+  if (already) return;
+
   const path = join("/tmp/tf", `membership-${userId}.jsonl`);
   mkdirSync("/tmp/tf", { recursive: true });
   writeFileSync(

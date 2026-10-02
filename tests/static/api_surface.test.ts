@@ -420,10 +420,28 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
 
   it("removeMember se niega a auto-borrarse y a remover a otro org_admin", () => {
     const orgs = read("orgs.ts");
-    const body = orgs.slice(orgs.indexOf("export const removeMember"));
+    const start = orgs.indexOf("export const removeMember");
+    // Alcance EXACTO de la función: hasta la siguiente exportación (si no, el
+    // recorte se comería el resto del archivo y las aserciones serían vacuas).
+    const end = orgs.indexOf("export const ", start + 10);
+    const body = orgs.slice(start, end === -1 ? undefined : end);
     expect(body).toMatch(/targetUserId === actorId/);
     expect(body).toMatch(/membership\.role === "org_admin"/);
     expect(body).toMatch(/ctx\.db\.delete\(membership\._id\)/);
+    // REFUERZO (auditoría #6): la revocación debe ser EXHAUSTIVA y acotada.
+    // El índice `by_org_user` NO es único en Convex, de modo que un restore o
+    // un import de fixtures pueden dejar filas DUPLICADAS para el mismo par
+    // (org, usuario). Si el borrado fuera un único delete (como era), la fila
+    // restante mantenía el acceso con la sesión viva: bypass de revocación
+    // observado de verdad en esta suite. Exigimos:
+    //  - bucle de borrado con techo (`REVOKE_MAX_ROWS`),
+    //  - fallo explícito si el techo se alcanza (fail-closed: no un `ok: true`
+    //    de una revocación incompleta),
+    //  - NINGÚN `.collect()` (lectura acotada por índice, fila a fila).
+    expect(body).toMatch(/REVOKE_MAX_ROWS/);
+    expect(body).toMatch(/REVOCACION_INCOMPLETA/);
+    // Sin comentarios: la propia nota de código menciona `.collect()`.
+    expect(stripComments(body)).not.toMatch(/\.collect\(\)/);
   });
 
   it("auditTrail devuelve solo campos no sensibles y pagina la lectura", () => {

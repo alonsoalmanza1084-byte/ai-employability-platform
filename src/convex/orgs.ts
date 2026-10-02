@@ -301,7 +301,7 @@ export const removeMember = mutation({
     }
     const target = await ctx.db.get(args.targetUserId);
     if (!target) throw new Error("NOT_FOUND");
-    const membership = await ctx.db
+    let membership = await ctx.db
       .query("organizationMembers")
       .withIndex("by_org_user", (q) =>
         q.eq("organizationId", args.organizationId).eq("userId", args.targetUserId),
@@ -313,16 +313,45 @@ export const removeMember = mutation({
         "No puedes remover a otro org_admin; transfiere primero la propiedad.",
       );
     }
-    await ctx.db.delete(membership._id);
+    // Se conserva la fila ORIGINAL para la auditoría (el bucle de abajo deja
+    // `membership` en null cuando termina).
+    const removedRole = membership.role;
+    const removedRowId = membership._id;
+    // REVOCACIÓN EXHAUSTIVA: hay que borrar TODAS las filas de membresía de ese
+    // par (org, usuario), no solo la primera. El índice `by_org_user` NO es
+    // único en Convex, así que un restore o un import de fixtures puede haber
+    // dejado filas duplicadas; con un solo delete el usuario conservaría
+    // acceso con la sesión viva (bypass de revocación).
+    //
+    // Sin `.collect()` a propósito: cada vuelta relee UNA fila por índice
+    // (lectura acotada, igual que el resto del código — guard estático
+    // `api_surface.test.ts`). `REVOKE_MAX_ROWS` es un techo de seguridad: si
+    // llegara a alcanzarse, la mutación FALLA (fail-closed) en lugar de
+    // anunciar una revocación que quedó incompleta.
+    const REVOKE_MAX_ROWS = 50;
+    let removedRows = 0;
+    while (membership) {
+      if (removedRows >= REVOKE_MAX_ROWS) {
+        throw new Error("REVOCACION_INCOMPLETA");
+      }
+      await ctx.db.delete(membership._id);
+      removedRows++;
+      membership = await ctx.db
+        .query("organizationMembers")
+        .withIndex("by_org_user", (q) =>
+          q.eq("organizationId", args.organizationId).eq("userId", args.targetUserId),
+        )
+        .first();
+    }
     await audit(ctx, {
       actorUserId: actorId,
       organizationId: args.organizationId,
       action: "org.member.remove",
       targetType: "organizationMember",
-      targetId: membership._id,
-      metadata: { removedRole: membership.role },
+      targetId: removedRowId,
+      metadata: { removedRole },
     });
-    return { ok: true };
+    return { ok: true, removedRows };
   },
 });
 

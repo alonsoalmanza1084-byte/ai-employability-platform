@@ -15,8 +15,14 @@
 # El flujo de invitación (`invite` → `acceptInvite`) se verifica por SEPARADO en
 # tests/unit/invitations.security.test.ts y en security.integration.test.ts.
 #
+# IDEMPOTENTE: el índice `by_org_user` no es único en Convex, así que un import
+# a ciegas sobre una org que YA tiene membresías crearía filas duplicadas para
+# el mismo par (org, usuario). Con duplicados, `removeMember` históricamente
+# borraba solo la primera fila y la revocación quedaba incompleta: la siembra
+# no debe ser capaz de provocar ese estado.
+#
 # Uso: bash scripts/rbac_seed_memberships.sh
-# ============================================================================
+# =============================================================================
 set -euo pipefail
 
 MANIFEST="${MANIFEST:-/tmp/tf/rbac-manifest.json}"
@@ -30,14 +36,36 @@ MANAGER=$(node -e 'const m=require(process.argv[1]);console.log(m.actors.hiring_
 
 echo "sembrando membresías en la organización $ORG_ID"
 
-cat > "$OUT" <<EOF
-{"organizationId":"$ORG_ID","userId":"$RECRUITER","role":"recruiter"}
-{"organizationId":"$ORG_ID","userId":"$MANAGER","role":"hiring_manager"}
-EOF
+# Se lee con --limit 10000 porque sin él `convex data` solo devuelve las 100
+# filas más recientes (trampa de medición ya documentada en OPERATIONS §6).
+EXISTING=$(bunx convex data organizationMembers --limit 10000 2>/dev/null || true)
+
+has_row() {
+  printf '%s\n' "$EXISTING" | grep -F "$ORG_ID" | grep -F "$1" >/dev/null 2>&1
+}
+
+: > "$OUT"
+SEEDED=0
+for spec in "$RECRUITER:recruiter" "$MANAGER:hiring_manager"; do
+  MEMBER_ID=${spec%%:*}
+  MEMBER_ROLE=${spec##*:}
+  if has_row "$MEMBER_ID"; then
+    echo "ya existe membresía $MEMBER_ROLE para $MEMBER_ID (se omite)"
+    continue
+  fi
+  printf '{"organizationId":"%s","userId":"%s","role":"%s"}\n' \
+    "$ORG_ID" "$MEMBER_ID" "$MEMBER_ROLE" >> "$OUT"
+  SEEDED=$((SEEDED + 1))
+done
+
+if [ "$SEEDED" -eq 0 ]; then
+  echo "MEMBERSHIPS_SEEDED=0 (ya estaban sembradas)"
+  exit 0
+fi
 
 echo "--- $OUT ---"
 cat "$OUT"
 
 bunx convex import --table organizationMembers --append -y "$OUT"
 
-echo "MEMBERSHIPS_SEEDED=2"
+echo "MEMBERSHIPS_SEEDED=$SEEDED"

@@ -155,71 +155,6 @@ const coachProposalValidator = v.object({
   confidence: v.number(),
 });
 
-/** Tipos de resultado explícitos (evitan inferencia circular api interna). */
-
-type ProposalCreateResult =
-  | { ok: false; code: string; reason: string }
-  | {
-      ok: true
-      proposalId: import("./_generated/dataModel").Id<"coachProposals">
-      claimId: import("./_generated/dataModel").Id<"coachClaims">
-    };
-
-type ProposalRejectResult =
-  | { ok: false; code: string; reason: string }
-  | { ok: true };
-
-type ProposalListResult = {
-  proposals: Array<{
-    _id: import("./_generated/dataModel").Id<"coachProposals">
-    claimId: import("./_generated/dataModel").Id<"coachClaims">
-    proposedText: string
-    originalText: string | undefined
-    status: "pending" | "rejected"
-    confidence: number
-    promptVersion: string
-    createdAt: number
-    updatedAt: number
-  }>
-};
-
-type ProposalGetResult =
-  | { ok: false; code: string; reason: string }
-  | {
-      ok: true
-      proposal: {
-        _id: import("./_generated/dataModel").Id<"coachProposals">
-        claimId: import("./_generated/dataModel").Id<"coachClaims">
-        userId: import("./_generated/dataModel").Id<"users">
-        conversationId: import("./_generated/dataModel").Id<"coachConversations">
-        proposedText: string
-        originalText: string | undefined
-        status: "pending" | "rejected"
-        confidence: number
-        promptVersion: string
-        createdAt: number
-        updatedAt: number
-      }
-      claim: {
-        _id: import("./_generated/dataModel").Id<"coachClaims">
-        claimText: string
-        originalClaim: string | undefined
-        status: "verified" | "rejected"
-        confidence: number
-        promptVersion: string
-        createdAt: number
-        updatedAt: number
-      }
-      evidence: Array<{
-        _id: import("./_generated/dataModel").Id<"coachEvidence">
-        sourceType: "profile" | "diagnosis" | "conversation"
-        sourceId: string
-        excerpt: string
-        confidence: number
-        createdAt: number
-      }>
-    };
-
 /**
  * Tipo explícito del resultado de `prepareSend`. Se declara aquí para romper la
  * inferencia circular (api interna → módulo → action → api interna) que deja
@@ -919,8 +854,29 @@ export const createProposalBundle = internalMutation({
       };
     }
 
+    // Fail-closed ante límites que Convex v-validators no puede expresar (.max/.min
+    // de arrays no están disponibles en esta versión): rechazamos evidencia o
+    // claim evasive antes de tocar la BD.
+    const evidence = args.proposal.evidence;
+    if (!evidence || evidence.length === 0 || evidence.length > 6) {
+      return {
+        ok: false,
+        code: "VALIDATION",
+        reason:
+          "La propuesta debe incluir entre 1 y 6 referencias de evidencia (límite estructural).",
+      };
+    }
+    if (args.claim.evidenceRefs && args.claim.evidenceRefs.length > 6) {
+      return {
+        ok: false,
+        code: "VALIDATION",
+        reason:
+          "El claim no puede declarar más de 6 referencias de evidencia (límite estructural).",
+      };
+    }
+
     const now = Date.now();
-    for (const ref of args.proposal.evidence) {
+    for (const ref of evidence) {
       // sourceId debe parecer un id de Convex (fail-closed sin scanner de todos).
       if (!/^[a-z0-9]{20,40}$/.test(ref.sourceId)) {
         continue; // se descarta silenciosamente; no se persiste

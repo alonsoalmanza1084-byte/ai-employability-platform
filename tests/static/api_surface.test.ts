@@ -288,7 +288,7 @@ describe("career coach (incremento 1): solo lectura, cuotas y telemetría", () =
   });
 
   it("usa únicamente los eventos de auditoría previstos (sin contenido)", () => {
-    const actions = [...coach.matchAll(/action: "(coach\.[a-z.]+)"/g)].map(
+    const actions = [...coach.matchAll(/action: "(coach\.[a-z._]+)"/g)].map(
       (m) => m[1],
     );
     expect(new Set(actions)).toEqual(
@@ -296,6 +296,9 @@ describe("career coach (incremento 1): solo lectura, cuotas y telemetría", () =
         "coach.session.start",
         "coach.message.create",
         "coach.ai.failed",
+        "coach.proposal.create",
+        "coach.proposal.reject",
+        "coach.proposal.validation_failed",
       ]),
     );
     // Los límites se registran como securityEvent (convención de cv.upload).
@@ -340,6 +343,117 @@ describe("career coach (incremento 1): solo lectura, cuotas y telemetría", () =
     const ev = read("lib/ai/evidence.ts");
     expect(ev).toContain("HEURISTIC_GROUNDING_CHECK");
     expect(ev).toContain("NO es «evidencia verificada»");
+  });
+
+  it("INV-013/015/017: las funciones de propuestas son internas o públicas con ownership", () => {
+    // Internas: createProposalBundle, rejectProposal (invocadas desde action o mutate interno).
+    expect(exportedFunctionKind(coach, "createProposalBundle")).toBe("internalMutation");
+    expect(exportedFunctionKind(coach, "rejectProposal")).toBe("internalMutation");
+    // Públicas: listProposals, getProposal (queries con requireSelf).
+    expect(exportedFunctionKind(coach, "listProposals")).toBe("query");
+    expect(exportedFunctionKind(coach, "getProposal")).toBe("query");
+    // Acción pública que dispara creación de proposals.
+    expect(exportedFunctionKind(coach, "sendMessageWithProposals")).toBe("action");
+    // Ninguna acepta userId del cliente.
+    for (const fn of ["sendMessageWithProposals", "listProposals", "getProposal"]) {
+      const start = coach.indexOf(`export const ${fn}`);
+      const next = coach.indexOf("export const ", start + 10);
+      const scope = next === -1 ? coach.slice(start) : coach.slice(start, next);
+      expect(scope, `${fn} acepta userId del cliente`).not.toMatch(/args:\s*\{[^}]*userId/);
+      expect(scope, `${fn} no verifica ownership`).toContain("requireSelf");
+    }
+  });
+
+  it("INV-018: ningún código de propuestas muta candidateProfiles", () => {
+    expect(coach).not.toMatch(/(insert|patch|replace|delete)\(\s*"candidateProfiles"/);
+    // createProposalBundle ni sendMessageWithProposals patchean el perfil.
+    const start = coach.indexOf("export const createProposalBundle");
+    const next = coach.indexOf("export const ", start + 10);
+    const cpbScope = next === -1 ? coach.slice(start) : coach.slice(start, next);
+    expect(cpbScope).not.toMatch(/(insert|patch|replace|delete)\(\s*"candidateProfiles"/);
+    expect(cpbScope).toMatch(/insufficient_evidence|insufficient_verified_evidence/);
+  });
+
+  it("INV-024/026: prompt v1.2 deja explícito claim→evidence→proposal y no aplica cambios", () => {
+    const prompt = read("lib/ai/coach_prompts.ts");
+    expect(prompt).toContain("career_coach.v1.2");
+    expect(prompt).toMatch(/CADENA OBLIGATORIA claim → evidence → proposal/);
+    expect(prompt).toMatch(/PROPUESTA = PENDING, NO APLICADA/);
+    expect(prompt).toMatch(/Nunca la declares aceptada, verificada, aplicada/);
+    expect(prompt).toMatch(/NO inventes número de años de experiencia/);
+    expect(prompt).toMatch(/SEGURIDAD DE INSTRUCCIONES/);
+  });
+
+  it("INV-020: state machine propuesta = pending|rejected (sin accepted aún)", () => {
+    const schemas = read("lib/ai/proposal_schemas.ts");
+    // Estado de propuesta: solo pending|rejected. ACCEPTED no existe porque la
+    // aplicación de una propuesta pendiente queda para un incremento posterior
+    // (no aplica al perfil en Incremento 2).
+    expect(schemas).toContain("coachProposalStatusSchema");
+    expect(schemas).toMatch(/"pending"/);
+    expect(schemas).toMatch(/"rejected"/);
+    expect(schemas).not.toMatch(/"accepted"/);
+  });
+
+  it("INV-028: límites de evidence/proposals están presentes y fallan fail-closed", () => {
+    expect(coach).toMatch(/MAX_PROPOSALS_PER_CONVERSATION = 6/);
+    // Fail-closed ante evasión de límites no expresables en Convex v-validators:
+    // el handler rechaza evidence vacío o >6 y claim con evidenceRefs >6.
+    expect(coach).toMatch(/evidence.length === 0 || evidence.length > 6/);
+    expect(coach).toMatch(/evidenceRefs && .*evidenceRefs\.length > 6/);
+  });
+
+  it("INV-023: deleteAccount elimina claims/evidence/proposals del usuario", () => {
+    const account = read("account.ts");
+    expect(account).toMatch(/coachClaims/);
+    expect(account).toMatch(/coachEvidence/);
+    expect(account).toMatch(/coachProposals/);
+    expect(account).toMatch(/by_claim/);
+    expect(account).toMatch(/orphanProps/);
+    expect(account).toMatch(/by_user/);
+  });
+
+  it("INV-019: el bundle claim+evidence+proposal persiste en la misma transacción y falla sin_residual si falta evidencia", () => {
+    const start = coach.indexOf("export const createProposalBundle");
+    const next = coach.indexOf("export const ", start + 10);
+    const cpbScope = next === -1 ? coach.slice(start) : coach.slice(start, next);
+    // Si no hay evidencia verificable, no se inserta claim ni proposal.
+    expect(cpbScope).toMatch(/verifiedEvidence\.length === 0/);
+    // Persistencia atómica: inserts de claim, evidence (bucle) y proposal antes del return ok.
+    expect(cpbScope).toMatch(/ctx\.db\.insert\("coachClaims"/);
+    expect(cpbScope).toMatch(/ctx\.db\.insert\("coachEvidence"/);
+    expect(cpbScope).toMatch(/ctx\.db\.insert\("coachProposals"/);
+    // Audit del create.
+    expect(cpbScope).toMatch(/coach\.proposal\.create/);
+  });
+
+  it("INV-021: dedupe determinista por conversation+claimText (no por Date.now()/random)", () => {
+    const start = coach.indexOf("export const createProposalBundle");
+    const next = coach.indexOf("export const ", start + 10);
+    const cpbScope = next === -1 ? coach.slice(start) : coach.slice(start, next);
+    expect(cpbScope).toMatch(/existingClaim && existingClaim\.claimText === args\.claim\.statement/);
+    expect(cpbScope).toMatch(/DUPLICATE/);
+  });
+
+  it("INV-022: rejectProposal solo rechaza pending y no modifica el perfil ni evidencia", () => {
+    const start = coach.indexOf("export const rejectProposal");
+    const next = coach.indexOf("export const ", start + 10);
+    const repScope = next === -1 ? coach.slice(start) : coach.slice(start, next);
+    expect(repScope).toMatch(/status !== "pending"/);
+    expect(repScope).toMatch(/status: "rejected"/);
+    expect(repScope).not.toMatch(/(insert|patch|replace|delete)\(\s*"candidateProfiles"/);
+    expect(repScope).toMatch(/coach\.proposal\.reject/);
+  });
+
+  it("INV-025/026: evidencia verification fail-closed: sourceId debe parecer id Convex y resolverse contra doc real", () => {
+    const start = coach.indexOf("export const createProposalBundle");
+    const next = coach.indexOf("export const ", start + 10);
+    const cpbScope = next === -1 ? coach.slice(start) : coach.slice(start, next);
+    // Fail-closed: sourceId debe parecer un id Convex (formato alfanumérico).
+    expect(cpbScope).toMatch(/\.test\(ref\.sourceId\)/);
+    // Diagnóstico se reduce a perfil (no tabla física).
+    expect(cpbScope).toMatch(/El diagnóstico no es tabla física/);
+    expect(cpbScope).toMatch(/sourceDocExists = .*profile.*_id === ref\.sourceId/);
   });
 });
 
@@ -436,6 +550,15 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
       "coach.ts:prepareSend": "internalMutation",
       "coach.ts:appendExchange": "internalMutation",
       "coach.ts:recordAiFailure": "internalMutation",
+      // coach (Career Coach IA — incremento 2: EVIDENCE + PROPOSALS).
+      // createProposalBundle es interno (invocado desde sendMessageWithProposals);
+      // rejectProposal, listProposals, getProposal son públicos con ownership.
+      // sendMessageWithProposals es la acción pública que dispara proposal creation.
+      "coach.ts:sendMessageWithProposals": "action",
+      "coach.ts:createProposalBundle": "internalMutation",
+      "coach.ts:rejectProposal": "internalMutation",
+      "coach.ts:listProposals": "query",
+      "coach.ts:getProposal": "query",
     };
 
     // 1) Todo lo exportado en el código real está en el inventario con la

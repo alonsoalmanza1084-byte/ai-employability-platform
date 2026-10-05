@@ -57,6 +57,22 @@ Formato: **Decisión → Alternativas → Razón → Consecuencias.** Índice de
 - **Razón:** JSON mode/structured outputs maduro, latencia y costo razonables para extracción, SDK TS estable.
 - **Consecuencias:** cambiar de proveedor = config; `aiExtractions` registra modelo real usado por si se compara calidad entre proveedores.
 
+## ADR-011 — Career Coach sin herramientas (solo lectura sobre datos existentes)
+- **Decisión:** el coach (incremento 1) solo LEE `candidateProfiles` + `computeDiagnosis` vía un Context Builder acotado; el módulo `coach.ts` no contiene ninguna ruta de escritura en el perfil ni herramientas para el modelo.
+- **Alternativas:** dar herramientas de escritura al modelo (rechazada: amplía el impacto de una inyección a la BD).
+- **Razón:** superficie mínima para el primer incremento; el estado solo lo cambia el usuario (coherente con ADR-005/009).
+- **Consecuencias:** los cambios de perfil siguen siendo manuales («Mi CV»/«Diagnóstico»); el incremento 2 (propuestas) exige ADR-012.
+
+## ADR-012 — Propuesta + confirmación humana para cualquier cambio (incremento 2)
+- **Decisión:** cuando el coach proponga ediciones, serán sugerencias NO aplicadas hasta una confirmación humana explícita; la IA nunca escribe directamente en el perfil.
+- **Razón:** coherencia con ADR-009 (decisión humana) y con el alcance read-only acordado.
+- **Consecuencias:** schema/versionado de propuestas pendientes de diseño en el incremento 2; hoy `careerCoachResponseSchema` NO tiene campo de propuestas.
+
+## ADR-013 — Versionado de prompts del Career Coach
+- **Decisión:** `CAREER_COACH_PROMPT_VERSION` (`career_coach.v1.0`) vive junto al system prompt; cambiar el texto exige subir la versión y registrarlo en git (mismo régimen que PROMPT_VERSION, ADR-008).
+- **Razón:** `aiCoachCalls.promptVersion` permite trazar qué versión generó cada respuesta.
+- **Consecuencias:** la evaluación golden del coach se ejecuta por versión de prompt.
+
 # ADRs índice
 1. Modular Monolith sobre Convex — aceptado
 2. Matching determinista — aceptado
@@ -68,3 +84,6 @@ Formato: **Decisión → Alternativas → Razón → Consecuencias.** Índice de
 8. Anti prompt-injection por diseño — aceptado
 9. Decisión humana obligatoria — aceptado
 10. OpenAI como primer proveedor — aceptado (requiere API key del usuario)
+11. Career Coach sin herramientas (read-only) — aceptado
+12. Propuesta + confirmación humana — aceptado (diseño en incremento 2)
+13. Versionado de prompts del coach — aceptado

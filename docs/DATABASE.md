@@ -11,7 +11,7 @@ users ─┬─ candidateProfiles (1:1)          organizations ─┬─ organiz
        ├─ orgProfiles (persona RH, 1:N orgs)              │                ├─ recruiterNotes
        └─ notifications                                   │                └─ aiExtractions
                                                           └─ auditLog (org scope)
-aiConversations/aiMessages, usageEvents, aiUsage, subscriptions/plans/invoices, securityEvents (fases 3+)
+coachConversations ─ coachMessages, aiCoachCalls (Career Coach, incremento 1), usageEvents, aiUsage, subscriptions/plans/invoices, securityEvents (fases 3+)
 ```
 
 ## 2. Tablas
@@ -155,6 +155,45 @@ Soft-delete: `deletedAt?`. Nunca borramos el binario al fallar un parseo (audita
 | error? | string |
 
 Índice: `by_version (resumeVersionId)`.
+
+### coachConversations / coachMessages / aiCoachCalls (Career Coach, incremento 1)
+
+#### coachConversations
+| Campo | Tipo |
+|---|---|
+| userId | Id<"users"> |
+| status | `"active" \| "closed"` (solo el `active` acepta mensajes) |
+| promptVersion | string (`career_coach.v1.0`) |
+| createdAt / updatedAt | number |
+
+Índices: `by_user (userId)`, `by_user_status (userId, status)`.
+
+#### coachMessages
+| Campo | Tipo |
+|---|---|
+| conversationId, userId | ids |
+| role | `"user" \| "assistant"` |
+| content | string (acotado en servidor: 1500 user / 4000 assistant) |
+| intent? | `explain_diagnosis \| ask_question \| discover_gap \| general` |
+| questions? / observations? | `string[]` (0..5 / 0..8, acotados) |
+| confidence? | number 0..1 |
+| requestId? / promptVersion? | string (correlación y trazabilidad, SIN contenido) |
+| createdAt | number |
+
+Índice: `by_conversation (conversationId)`. **El coach SOLO inserta aquí**: nunca escribe en `candidateProfiles` (incremento 1 read-only).
+
+#### aiCoachCalls (telemetría, SIN contenido)
+| Campo | Tipo |
+|---|---|
+| conversationId, userId | ids |
+| requestId | string (correlación con el mensaje del asistente) |
+| model / promptVersion | string |
+| inputTokens / outputTokens / durationMs | number |
+| ok | boolean |
+| error? | string = **código cerrado** (`RATE_LIMITED`/`SCHEMA_INVALID`/`PROVIDER_ERROR`/`TIMEOUT`/`CONTENT_FILTERED`); nunca el mensaje crudo |
+
+Índices: `by_conversation (conversationId)`, `by_user (userId)`.
+**Techo estructural:** `LIMITS.maxCoachCallsPerConversation` (100) se hace cumplir en `prepareSend`, de modo que el borrado en cascada de `deleteAccount` es acotado y exhaustivo.
 
 ### auditLog
 | Campo | Tipo |

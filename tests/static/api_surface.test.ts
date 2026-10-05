@@ -282,13 +282,13 @@ describe("career coach (incremento 1): solo lectura, cuotas y telemetría", () =
   });
 
   it("el coach NUNCA escribe en el perfil ni aplica extracciones", () => {
-    expect(coach).not.toMatch(/(insert|patch)\(\s*\"candidateProfiles\"/);
+    expect(coach).not.toMatch(/(insert|patch)\(\s*"candidateProfiles"/);
     expect(coach).not.toContain("applyExtraction");
     expect(coach).not.toContain("updateProfile");
   });
 
   it("usa únicamente los eventos de auditoría previstos (sin contenido)", () => {
-    const actions = [...coach.matchAll(/action: \"(coach\.[a-z.]+)\"/g)].map(
+    const actions = [...coach.matchAll(/action: "(coach\.[a-z.]+)"/g)].map(
       (m) => m[1],
     );
     expect(new Set(actions)).toEqual(
@@ -299,7 +299,7 @@ describe("career coach (incremento 1): solo lectura, cuotas y telemetría", () =
       ]),
     );
     // Los límites se registran como securityEvent (convención de cv.upload).
-    expect(coach).toMatch(/kind: \"rate_limited\"/);
+    expect(coach).toMatch(/kind: "rate_limited"/);
     // Telemetría: solo códigos cerrados, jamás el mensaje crudo del proveedor.
     expect(coach).toContain("AI_ERROR_CODES");
   });

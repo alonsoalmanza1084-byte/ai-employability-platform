@@ -64,6 +64,15 @@ Convenciones:
 |---|---|---|---|---|---|---|
 | `matches.getForApplication` | member | recruiter+ | `{applicationId}` | match completo con evidencia | — | — |
 
+### coach (Career Coach IA — incremento 1: SOLO LECTURA)
+| FUNC | AUTH | REQUEST | RESPONSE | RATE | AUDIT |
+|---|---|---|---|---|---|
+| `coach.getConversation` | self | `{}` | `{conversation, messages}` o `null` | — | — |
+| `coach.startConversation` | self | `{}` | `{ok:true, conversationId}` o `{ok:false, code, reason, conversationId?}` | 3 nuevas/día | `coach.session.start` |
+| `coach.sendMessage` 🔍 | self | `{conversationId, message ≤1500}` | `{ok:true}` o `{ok:false, code, reason}` | 6/hora y 30/día | `coach.message.create` · `coach.ai.failed` · `rate_limited` (securityEvents) |
+
+🔍 `sendMessage` es una **action**: el gate de ownership + cuotas corre en `prepareSend` (internalMutation, transaccional) ANTES de llamar a la IA — si el gate falla, no hay llamada al proveedor ni escrituras parciales. El cliente nunca envía `userId`; el hilo activo se resuelve server-side. Los fallos devuelven `{ok:false, code, reason}` con un mensaje SEGURO (códigos cerrados: `RATE_LIMITED`, `TIMEOUT`, `SCHEMA_INVALID`, `PROVIDER_ERROR`, `CONTENT_FILTERED`, `INTERNAL`, `NO_PROFILE`, `NOT_FOUND`, `VALIDATION`, …). Ver `docs/CAREER_COACH.md`.
+
 ## 3. Rate limits V1
 
 Implementados server-side contando eventos por ventana (tabla `usageEvents` con `dedupeKey` compuesto por usuario+ventana):
@@ -75,6 +84,8 @@ Implementados server-side contando eventos por ventana (tabla `usageEvents` con 
 | Llamadas IA (extracción) | por CV (1 re-proceso gratis por error) |
 | Decisions/notes | 100/día |
 | Invitaciones | 20/día |
+| Coach: mensajes | 6/hora y 30/día (consumo atómico ANTES de la IA) |
+| Coach: conversaciones nuevas | 3/día |
 
 El excedente responde con error `RATE_LIMITED` y mensaje claro. Los límites son configurables en un único archivo (`convex/lib/limits.ts`).
 

@@ -63,15 +63,15 @@ Formato: **Decisión → Alternativas → Razón → Consecuencias.** Índice de
 - **Razón:** superficie mínima para el primer incremento; el estado solo lo cambia el usuario (coherente con ADR-005/009).
 - **Consecuencias:** los cambios de perfil siguen siendo manuales («Mi CV»/«Diagnóstico»); el incremento 2 (propuestas) exige ADR-012.
 
-## ADR-012 — Propuesta + confirmación humana para cualquier cambio (incremento 2)
-- **Decisión:** cuando el coach proponga ediciones, serán sugerencias NO aplicadas hasta una confirmación humana explícita; la IA nunca escribe directamente en el perfil.
-- **Razón:** coherencia con ADR-009 (decisión humana) y con el alcance read-only acordado.
-- **Consecuencias:** schema/versionado de propuestas pendientes de diseño en el incremento 2; hoy `careerCoachResponseSchema` NO tiene campo de propuestas.
+## ADR-012 — Propuesta + confirmación humana para cualquier cambio (incremento 2, implementado)
+- **Decisión:** cuando el coach proponga ediciones, serán sugerencias NO aplicadas hasta una confirmación humana explícita; la IA nunca escribe directamente en el perfil. En Incremento 2 esto se implementa mediante `coachClaims` → `coachEvidence` → `coachProposals` (`pending|rejected`), sin estado `accepted` ni mutación automática del perfil (`candidateProfiles`).
+- **Razón:** coherencia con ADR-009 (decisión humana) y con el alcance read-only acordado. Separación estricta `LLM → CLAIM → EVIDENCE → PROPOSAL`, nunca `LLM → candidateProfile`.
+- **Consecuencias:** `careerCoachResponseWithProposalsSchema` incluye campo `proposals`; el prompt `career_coach.v1.2` genera propuestas PENDING revisables; la aplicación de una propuesta aceptada queda para un incremento posterior (no existe `accepted` en Incremento 2).
 
 ## ADR-013 — Versionado de prompts del Career Coach
-- **Decisión:** `CAREER_COACH_PROMPT_VERSION` (`career_coach.v1.0`) vive junto al system prompt; cambiar el texto exige subir la versión y registrarlo en git (mismo régimen que PROMPT_VERSION, ADR-008).
+- **Decisión:** `CAREER_COACH_PROMPT_VERSION` (`career_coach.v1.2`) vive junto al system prompt; cambiar el texto exige subir la versión y registrarlo en git (mismo régimen que PROMPT_VERSION, ADR-008).
 - **Razón:** `aiCoachCalls.promptVersion` permite trazar qué versión generó cada respuesta.
-- **Consecuencias:** la evaluación golden del coach se ejecuta por versión de prompt.
+- **Consecuencias:** la evaluación golden del coach se ejecuta por versión de prompt. Incremento 2 usa `career_coach.v1.2` con cadena explícita claim→evidence→proposal.
 
 # ADRs índice
 1. Modular Monolith sobre Convex — aceptado

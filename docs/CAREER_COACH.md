@@ -16,10 +16,10 @@
 | Sí hace | No hace (incrementos posteriores) |
 |---|---|
 | Lee `candidateProfiles` + `computeDiagnosis` (determinista) | Escribir en el perfil (ADR-011) |
-| Explica el diagnóstico y sus dimensiones | Persistir/aplicar propuestas de edición (ADR-012) |
-| Hace preguntas para descubrir gaps | Modo C (matching) / Modo D |
-| Devuelve observaciones verificadas contra la evidencia | Hablar de salarios (§26) ni atributos protegidos (§25) |
-| Historial de conversación propio, acotado | Retención de datos (NOT_DEFINED por decisión) |
+| Explica el diagnóstico y sus dimensiones | Modo C (matching) / Modo D |
+| Hace preguntas para descubrir gaps | Hablar de salarios (§26) ni atributos protegidos (§25) |
+| Devuelve observaciones verificadas contra la evidencia | Retención de datos (NOT_DEFINED por decisión) |
+| **Incremento 2: propone sugerencias PENDING revisables** (`coachClaims → coachEvidence → coachProposals`, `pending|rejected`, sin aplicar al perfil) | Aplicar propuestas automáticamente (aún no existe `accepted`) |
 
 ## 2. Arquitectura del flujo `sendMessage`
 

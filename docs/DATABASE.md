@@ -163,7 +163,7 @@ Soft-delete: `deletedAt?`. Nunca borramos el binario al fallar un parseo (audita
 |---|---|
 | userId | Id<"users"> |
 | status | `"active" \| "closed"` (solo el `active` acepta mensajes) |
-| promptVersion | string (`career_coach.v1.0`) |
+| promptVersion | string (`career_coach.v1.2`) |
 | createdAt / updatedAt | number |
 
 Índices: `by_user (userId)`, `by_user_status (userId, status)`.
@@ -194,6 +194,71 @@ Soft-delete: `deletedAt?`. Nunca borramos el binario al fallar un parseo (audita
 
 Índices: `by_conversation (conversationId)`, `by_user (userId)`.
 **Techo estructural:** `LIMITS.maxCoachCallsPerConversation` (100) se hace cumplir en `prepareSend`, de modo que el borrado en cascada de `deleteAccount` es acotado y exhaustivo.
+
+### coachClaims / coachEvidence / coachProposals (Career Coach, incremento 2 — EVIDENCE + PROPOSALS)
+
+#### coachClaims
+| Campo | Tipo |
+|---|---|
+| userId | Id<"users"> |
+| conversationId | Id<"coachConversations"> |
+| claimText | string (1..600) |
+| originalClaim | string? (1..600) |
+| status | `"verified" | "rejected"` |
+| confidence | number 0..1 |
+| promptVersion | string |
+| createdAt / updatedAt | number |
+
+Índices: `by_user (userId)`, `by_conversation (conversationId)`.
+
+Un claim representa una afirmación generada/extraída durante el flujo del coach. NO es un field del perfil; no muta `candidateProfiles`. El backend, no el LLM, asigna el estado `verified`/`rejected`. En Incremento 2, al persistir con evidencia verificable, el estado inicial es `verified` (el backend verificó que la evidencia existe); `rejected` se usa solo para casos de validación fallida interna.
+
+#### coachEvidence
+| Campo | Tipo |
+|---|---|
+| claimId | Id<"coachClaims"> |
+| sourceType | `"profile" | "diagnosis" | "conversation"` |
+| sourceId | string (formato id Convex alfanumérico) |
+| excerpt | string (1..400) |
+| confidence | number 0..1 |
+| createdAt | number |
+
+Índice: `by_claim (claimId)`.
+
+La evidencia representa la base verificable de un claim. El backend resuelve `sourceId` contra documentos REALES existentes (perfil/diagnóstico/conversación) y descarta silenciosamente cualquier referencia no verificable. NO se inventa evidencia: si una referencia no resuelve contra un documento existente del dueño, no se persiste. `sourceType = "diagnosis"` se normaliza a `"profile"` porque el diagnóstico no es tabla física (se computa en derivación).
+
+#### coachProposals
+| Campo | Tipo |
+|---|---|
+| userId | Id<"users"> |
+| claimId | Id<"coachClaims"> |
+| conversationId | Id<"coachConversations"> |
+| proposedText | string (1..600) |
+| originalText | string? (1..600) |
+| status | `"pending" | "rejected"` |
+| confidence | number 0..1 |
+| promptVersion | string |
+| createdAt / updatedAt | number |
+
+Índices: `by_user (userId)`, `by_conversation (conversationId)`, `by_claim (claimId)`.
+
+Una proposal representa una recomendación pendiente derivada de un claim verificado + evidencia. NO es el profile; NO modifica el profile. Estados: `pending` (pendiente de revisión) y `rejected` (rechazada por su dueño). NO existe `accepted` en Incremento 2: la aplicación de una proposal aceptada queda para un incremento posterior. `rejectProposal` solo permite transición `pending → rejected`.
+
+**relación:** `coachClaims` 1 → N `coachEvidence` → 1 `coachProposals` (cada proposal deriva de un claim).
+
+**atomicidad:** `createProposalBundle` (internalMutation) persiste claim + evidence (bucle) + proposal en la misma transacción de lectura+inserción; si no queda evidencia verificable, no se inserta claim ni proposal (`insufficient_evidence`).
+
+**dedupe:** por `conversationId` + `claimText` (idempotencia contra reintentos del proveedor).
+
+**deleteAccount:** borra en cascada claims → evidence + proposals por `claimId`; además proposals huérfanas por `userId`. Lecturas acotadas por índices con techo (ver `account.ts`).
+
+**límites:** `MAX_PROPOSALS_PER_CONVERSATION = 6`; evidence 1..6 por proposal (fail-closed en servidor porque Convex v-validators en esta versión no soporta `.max()/.min()` en arrays); claim/evidence/proposal strings acotados en 600/400/600; confidence 0..1.
+
+**prompt:** `career_coach.v1.2` (`src/convex/lib/ai/coach_prompts.ts`), con cadena explícita `CLAIM → EVIDENCE → PROPOSAL`, `PROPUESTA = PENDING, NO APLICADA`, prohibición de decidir contratación, prohibición de inventar cifras/IDs, `data ≠ instructions`.
+
+**grounding:** la evidencia persiste solo tras resolución server-side contra documentos reales; el post-check `verifyCoachResponse` (lib/ai/evidence.ts) es **HEURISTIC_GROUNDING_CHECK** (no «evidencia verificada» semántica), con regla numérica anti-invención.
+
+**eyes on:** no hay `accepted`; la propuesta UI no está implementada todavía.
 
 ### auditLog
 | Campo | Tipo |

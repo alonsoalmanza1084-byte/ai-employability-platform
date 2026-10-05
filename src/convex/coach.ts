@@ -11,8 +11,9 @@
  *      estructurales + cuotas (hora/día) ATÓMICAS y fail-closed: el uso se
  *      consume ANTES de llamar a la IA; si algo falla aquí, NO se llama.
  *   2. Context Builder + llamada al proveedor con salida validada por zod.
- *   3. Post-check de evidencia (`verifyCoachResponse`): las observaciones no
- *      sustentadas en el perfil real se descartan (anti alucinación).
+ *   3. Grounding heurístico (`verifyCoachResponse`, HEURISTIC_GROUNDING_CHECK):
+ *      las observaciones no sustentadas en el contexto se descartan (anti
+ *      alucinación; la prosa NO se filtra — ver lib/ai/evidence.ts).
  *   4. `appendExchange` (internalMutation): mensaje usuario + mensaje
  *      asistente + telemetría `aiCoachCalls` + audit, todo en una transacción.
  *      Si la IA falla, NADA se persiste (solo `recordAiFailure` deja el
@@ -652,7 +653,9 @@ export const sendMessage = action({
       };
     }
 
-    // Post-check de evidencia: descarta observaciones no sustentadas.
+    // Grounding heurístico (HEURISTIC_GROUNDING_CHECK): descarta observaciones
+    // no sustentadas en el contexto; la prosa queda sin filtrar (limitación
+    // documentada en docs/CAREER_COACH_SECURITY.md).
     const verified = verifyCoachResponse(aiResult.data, prep.evidenceText);
     const reply: CareerCoachResponse = {
       message: verified.message,

@@ -308,6 +308,39 @@ describe("career coach (incremento 1): solo lectura, cuotas y telemetría", () =
     expect(stripComments(coach)).not.toMatch(/\.collect\(\)/);
     expect(stripComments(coach)).not.toMatch(/v\.any\(\)/);
   });
+
+  it("INV-002: el LLM no tiene herramientas ni acceso a red/BD más allá del provider", () => {
+    // El contrato de petición NO puede llevar tools/function-calling: la única
+    // superficie del modelo es system+user message y JSON de salida.
+    const types = stripComments(read("lib/ai/types.ts"));
+    expect(types).not.toMatch(/\btools\b|function_call|tool_calls/);
+    expect(stripComments(coach)).not.toMatch(/\btools\b|function_call|tool_calls/);
+    // El coach no toca storage ni auth internamente (solo requireSelf).
+    expect(coach).not.toContain("ctx.storage");
+  });
+
+  it("INV-012: el coach no alcanza el dominio de reclutamiento ni decide contrataciones", () => {
+    expect(coach).not.toMatch(
+      /"(applications|jobs|matches|organizationMembers|recruiterNotes)"/,
+    );
+    expect(coach).not.toContain("requireMembership");
+    expect(stripComments(coach)).not.toMatch(/\.decide\b|applicationStatus/);
+  });
+
+  it("INV-010/replay: el requestId NO lo aporta el cliente (dedupe server-side)", () => {
+    const start = coach.indexOf("export const sendMessage");
+    const next = coach.indexOf("export const ", start + 10);
+    const scope = coach.slice(start, next === -1 ? undefined : next);
+    const argsBlock = scope.slice(0, scope.indexOf("handler:"));
+    expect(argsBlock).not.toMatch(/requestId/);
+    expect(argsBlock).not.toMatch(/userId/);
+  });
+
+  it("la limitación del check de grounding está documentada con honestidad (HEURISTIC_GROUNDING_CHECK)", () => {
+    const ev = read("lib/ai/evidence.ts");
+    expect(ev).toContain("HEURISTIC_GROUNDING_CHECK");
+    expect(ev).toContain("NO es «evidencia verificada»");
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────

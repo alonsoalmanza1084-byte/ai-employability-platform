@@ -55,7 +55,7 @@ Módulos:
 | `src/convex/coach.ts` | `getConversation` (query), `startConversation` (mutation), `sendMessage` (action) + internals `prepareSend`/`appendExchange`/`recordAiFailure` |
 | `src/convex/lib/ai/coach_prompts.ts` | `CAREER_COACH_PROMPT_VERSION`, `CAREER_COACH_SYSTEM_PROMPT_V1`, `buildCareerCoachUserContent` |
 | `src/convex/lib/ai/coach_schemas.ts` | zod `careerCoachResponseSchema` + JSON schema (structured outputs) |
-| `src/convex/lib/ai/evidence.ts` | `verifyCoachResponse` + `COACH_EVIDENCE_MIN_OVERLAP` (0.4) |
+| `src/convex/lib/ai/evidence.ts` | `verifyCoachResponse` + `COACH_EVIDENCE_MIN_OVERLAP` (0.4) + regla numérica (toda cifra de la afirmación, literal completo, debe estar en el contexto) |
 | `src/convex/lib/ai/prompts.ts` | `sanitizeUserText` (compartido con la extracción de CV, ADR-008) |
 | `src/convex/lib/limits.ts` | cuotas y techos estructurales del coach |
 | `src/pages/Dashboard.tsx` | tab «Coach» (componente `Coach`) |
@@ -76,7 +76,7 @@ telemetría con lecturas acotadas por los techos de `LIMITS`.
 | Control | Implementación |
 |---|---|
 | Prompt injection (ADR-008) | bloques delimitados + `sanitizeUserText` (el usuario NO puede cerrar un bloque) + regla explícita 6 en el system prompt |
-| Alucinación (AI_SECURITY §6) | `verifyCoachResponse`: substring normalizado o ≥40% de tokens; confidence ≤0.5 si se descarta algo |
+| Alucinación (AI_SECURITY §6) | `verifyCoachResponse` = **HEURISTIC_GROUNDING_CHECK** (no «evidencia verificada»): substring normalizado o ≥40% de tokens **+ toda cifra afirmada debe existir literalmente en el contexto** (regla numérica anti-invención: «15 años» no pasa si el perfil solo dice «3 años»); confidence ≤0.5 si se descarta algo |
 | Salida no confiable | zod estricto (longitudes, enums, arrays acotados) + re-acotado en `appendExchange` |
 | Atributos protegidos (§25) / salario (§26) | reglas 3 y 4 del system prompt; sin datos de contacto ni credenciales (regla 5) |
 | Autorización | `requireSelf` en las 3 públicas; ownership revalidado en cada internal; sin `userId` en args |

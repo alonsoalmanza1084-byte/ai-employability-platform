@@ -286,13 +286,27 @@ export function verifyExtractionAgainstSource(
 export const COACH_EVIDENCE_MIN_OVERLAP = 0.4;
 
 /**
- * Post-check determinista del Career Coach (misma filosofía que
- * `verifyExtractionAgainstSource`, AI_SECURITY.md §6):
+ * HEURISTIC_GROUNDING_CHECK (Career Coach; AI_SECURITY.md §6 adaptado).
+ *
+ * ADVERTENCIA DE GARANTÍA — esto NO es «evidencia verificada» al nivel del
+ * post-check de extracción (`verifyExtractionAgainstSource`): aquí no existe
+ * un documento fuente contra el que probar verdad; solo hay un CONTEXTO
+ * (perfil + diagnóstico) que el propio servidor construyó. Lo que este check
+ * demuestra es únicamente: «la afirmación está GROUNDADA en el contexto
+ * entregado» (substring literal o ≥40% de tokens presentes). Una afirmación
+ * que pasa el check NO es por eso verdadera; una que falla se DESCARTA
+ * (fail-closed). No exagerar esta garantía en docs ni en copy de producto.
  *
  *  1. `observations` son AFIRMACIONES sobre el perfil → solo se conservan si
  *     aparecen en la evidencia real (substring normalizado o ≥40% de sus
  *     tokens presentes). Una observación descartada baja la confianza a ≤0.5
  *     (fail-closed: preferimos recortar a afirmar algo no verificable).
+ *  1b. Regla numérica: toda CIFRA de la afirmación debe existir en el
+ *     contexto. Sin ella, una invención como «15 años» sobrevivía al overlap
+ *     porque tokens genéricos («años», «profesional») sí aparecen en el perfil
+ *     (auditado: 2/5 = umbral exacto). Las cifras son el caso de invención
+ *     más común (§13) y se comparan como literales completos («15» no
+ *     coincide con «2015»).
  *  2. `message` (prosa) y `questions` NO se filtran: son explicaciones y
  *     preguntas, no hechos verificables de forma determinista. Esa limitación
  *     está documentada en docs/CAREER_COACH_SECURITY.md.
@@ -306,7 +320,14 @@ export function verifyCoachResponse(
   const normalized = normText(evidenceText);
   const evidenceTokens = new Set(tokens(evidenceText));
 
+  const NUMBER = /\b\d+(?:[.,]\d+)?\b/g;
+  const evidenceNumbers = new Set(normalized.match(NUMBER) ?? []);
+
   const observations = response.observations.filter((o) => {
+    // Toda cifra afirmada debe estar en el contexto (literales completos).
+    for (const n of o.match(NUMBER) ?? []) {
+      if (!evidenceNumbers.has(n)) return false;
+    }
     const target = normText(o);
     if (target.length > 0 && normalized.includes(target)) return true;
     const toks = tokens(o).filter((t) => t.length >= 3);

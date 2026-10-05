@@ -9,7 +9,8 @@ export type AIErrorCode =
   | "CONTENT_FILTERED";
 
 export interface AIRequest {
-  task: "cv_extract";
+  /** Tarea que define el prompt/telemetría. Ampliar aquí = revisar providers. */
+  task: "cv_extract" | "career_coach";
   system: string;
   /** Dato del usuario, ya delimitado por el llamador. */
   userContent: string;

@@ -8,6 +8,8 @@
  *     incluyendo el BINARIO en storage privado (PII).
  *  2. Baja de sus organizationMembers (revoca acceso residual si sobreviviera
  *     cualquier token; requireMembership → NOT_FOUND sin membresía).
+ *     También borra conversaciones del Career Coach, sus mensajes y la
+ *     telemetría aiCoachCalls (acotado por LIMITS).
  *  3. Cierre forzoso de sesiones y borrado de authAccounts del usuario:
  *     sin esto, un OTP al email original podría "resucitar" la cuenta
  *     borrada (el provider casaría authAccounts.providerAccountId).
@@ -62,6 +64,35 @@ export const deleteAccount = mutation({
         await ctx.db.delete(ver._id);
       }
       await ctx.db.delete(r._id);
+    }
+
+    // 2-bis. Career Coach: conversaciones, mensajes y telemetría propios.
+    //     Lecturas acotadas por los techos estructurales de LIMITS (el margen
+    //     +coachMessagesPerHour cubre la ráfaga máxima de envíos en paralelo).
+    const conversations = await ctx.db
+      .query("coachConversations")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .take(LIMITS.maxCoachConversationsPerUser);
+    const COACH_READ_MAX =
+      LIMITS.maxCoachMessagesPerConversation + LIMITS.coachMessagesPerHour;
+    const COACH_CALLS_READ_MAX =
+      LIMITS.maxCoachCallsPerConversation + LIMITS.coachMessagesPerHour + 2;
+    for (const c of conversations) {
+      const coachMsgs = await ctx.db
+        .query("coachMessages")
+        .withIndex("by_conversation", (q) =>
+          q.eq("conversationId", c._id),
+        )
+        .take(COACH_READ_MAX);
+      for (const m of coachMsgs) await ctx.db.delete(m._id);
+      const coachCalls = await ctx.db
+        .query("aiCoachCalls")
+        .withIndex("by_conversation", (q) =>
+          q.eq("conversationId", c._id),
+        )
+        .take(COACH_CALLS_READ_MAX);
+      for (const t of coachCalls) await ctx.db.delete(t._id);
+      await ctx.db.delete(c._id);
     }
 
     // 3) Membresías: revocación de acceso (no son datos personales del

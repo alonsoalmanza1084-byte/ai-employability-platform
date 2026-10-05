@@ -17,6 +17,30 @@ export const LIMITS = {
   // Techo de requisitos por vacante (jobs.create ya valida 1..20; este es el
   // techo de lectura en applyExtraction — auditoría #2).
   maxRequirementsPerJob: 20,
+
+  // ─── Career Coach IA (Incremento 1: solo lectura) ──────────────────────
+  // Cuotas CONSERVADORAS y fail-closed (decisión de producto): todo chequeo
+  // ocurre en una mutación transaccional ANTES de llamar a la IA, y el uso se
+  // consume igual aunque la llamada falle después. Si un chequeo lanza,
+  // NUNCA se llama a la IA.
+  coachMessagesPerHour: 6,
+  coachMessagesPerDay: 30,
+  coachConversationsPerDay: 3,
+  // Techos estructurales: acotan las lecturas de borrado en cascada
+  // (deleteAccount) y el historial que puede mandarse al modelo.
+  maxCoachConversationsPerUser: 30,
+  maxCoachMessagesPerConversation: 60,
+  // Techo de llamadas (filas aiCoachCalls) por conversación: incluye fallos,
+  // que no llenan mensajes pero sí consumen presupuesto.
+  maxCoachCallsPerConversation: 100,
+  coachUserMessageMaxChars: 1500,
+  coachHistoryMessages: 10,
+  coachHistoryTurnMaxChars: 500,
+  coachProfileMaxChars: 7000,
+  coachDiagnosisMaxChars: 3000,
+  coachContextMaxChars: 12_000,
+  coachMaxOutputTokens: 800,
 } as const;
 
+export const HOUR_MS = 60 * 60 * 1000;
 export const DAY_MS = 24 * 60 * 60 * 1000;

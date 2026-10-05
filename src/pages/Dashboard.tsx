@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { useNavigate } from "react-router";
 import {
   Briefcase,
@@ -8,8 +8,10 @@ import {
   GraduationCap,
   LayoutDashboard,
   LogOut,
+  MessageSquare,
   Pencil,
   Plus,
+  Send,
   Sparkles,
   Trophy,
   X,
@@ -465,6 +467,195 @@ function MiCv({ profile }: { profile: Profile }) {
   );
 }
 
+/**
+ * Career Coach IA (Incremento 1: SOLO LECTURA).
+ * Conversación sobre el perfil existente: el coach explica el diagnóstico,
+ * pregunta y descubre huecos. No hay edición desde aquí (ni propuestas
+ * persistidas): cualquier cambio se hace en «Mi CV» / «Diagnóstico».
+ */
+function Coach() {
+  const state = useQuery(api.coach.getConversation);
+  const startConversation = useMutation(api.coach.startConversation);
+  const sendMessage = useAction(api.coach.sendMessage);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const messageCount = state?.messages.length ?? 0;
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [messageCount]);
+
+  async function handleStart() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await startConversation({});
+      if (!res.ok) setError(res.reason);
+    } catch {
+      setError("No se pudo iniciar la conversación. Reintenta.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSend() {
+    const text = draft.trim();
+    if (!text || busy || !state?.conversation) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await sendMessage({
+        conversationId: state.conversation._id,
+        message: text,
+      });
+      if (res.ok) setDraft("");
+      else setError(res.reason);
+    } catch {
+      setError("No se pudo enviar el mensaje. Reintenta.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section aria-labelledby="coach-title" className="mt-12">
+      <div className="hairline-b flex flex-wrap items-end justify-between gap-4 pb-4">
+        <div>
+          <p className="eyebrow">Career Coach IA</p>
+          <h2 id="coach-title" className="mt-1 text-xl font-semibold">
+            Conversa sobre tu perfil
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Tu coach lee tu perfil y tu diagnóstico para explicártelos,
+            preguntarte lo que haga falta y descubrir huecos. No modifica tu
+            perfil ni tu CV: solo conversa.
+          </p>
+        </div>
+        {state && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleStart()}
+            disabled={busy}
+          >
+            <Plus className="size-4" />
+            Nueva conversación
+          </Button>
+        )}
+      </div>
+
+      {state === undefined ? (
+        <div className="flex min-h-40 items-center justify-center text-sm text-muted-foreground">
+          Cargando…
+        </div>
+      ) : state === null ? (
+        <div className="mt-8 flex flex-col items-center gap-4 rounded-lg border border-border p-10 text-center">
+          <div className="flex size-12 items-center justify-center rounded-full border border-border">
+            <MessageSquare className="size-5 text-muted-foreground" />
+          </div>
+          <p className="max-w-md text-sm text-muted-foreground">
+            Aún no has empezado. El coach parte de tu perfil actual: pregúntale
+            por tu diagnóstico, qué mejorar o qué contar en tu próximo CV.
+          </p>
+          <Button onClick={() => void handleStart()} disabled={busy}>
+            <Sparkles className="size-4" />
+            Empezar conversación
+          </Button>
+        </div>
+      ) : (
+        <>
+          <div className="mt-6 flex max-h-[28rem] flex-col gap-4 overflow-y-auto rounded-lg border border-border p-4">
+            {state.messages.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                Escribe tu primer mensaje para arrancar la conversación.
+              </p>
+            )}
+            {state.messages.map((m) =>
+              m.role === "user" ? (
+                <div
+                  key={m._id}
+                  className="max-w-[85%] self-end rounded-xl bg-secondary px-3.5 py-2 text-sm text-secondary-foreground"
+                >
+                  {m.content}
+                </div>
+              ) : (
+                <div
+                  key={m._id}
+                  className="max-w-[92%] self-start rounded-xl border border-border bg-card px-3.5 py-2.5"
+                >
+                  <p className="whitespace-pre-wrap text-sm leading-6">
+                    {m.content}
+                  </p>
+                  {m.observations && m.observations.length > 0 && (
+                    <ul className="mt-2 space-y-1 border-t border-border pt-2">
+                      {m.observations.map((o, i) => (
+                        <li
+                          key={i}
+                          className="flex gap-2 text-xs text-muted-foreground"
+                        >
+                          <Sparkles className="mt-0.5 size-3 shrink-0" />
+                          <span>{o}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {m.questions && m.questions.length > 0 && (
+                    <div className="mt-2 border-t border-border pt-2">
+                      <p className="text-xs font-medium">Para saber más</p>
+                      <ol className="mt-1 list-decimal space-y-1 pl-4 text-xs text-muted-foreground">
+                        {m.questions.map((q, i) => (
+                          <li key={i}>{q}</li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+                </div>
+              ),
+            )}
+            <div ref={bottomRef} />
+          </div>
+
+          {error && (
+            <p role="alert" className="mt-3 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+
+          <div className="mt-4 flex items-end gap-2">
+            <Textarea
+              rows={2}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              /* Espejo de LIMITS.coachUserMessageMaxChars (src/convex/lib/limits.ts). */
+              maxLength={1500}
+              placeholder="P. ej.: ¿Por qué mi impacto está en 40 y cómo lo mejoro?"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void handleSend();
+                }
+              }}
+            />
+            <Button
+              onClick={() => void handleSend()}
+              disabled={busy || !draft.trim()}
+            >
+              <Send className="size-4" />
+              {busy ? "Enviando…" : "Enviar"}
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Límite diario de mensajes. El coach solo lee tu perfil; no lo
+            modifica.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
@@ -472,7 +663,9 @@ export default function Dashboard() {
   const resumes = useQuery(api.candidates.myResumes);
   const diagnosis = useQuery(api.candidates.diagnosis);
 
-  const [tab, setTab] = useState<"cv" | "diagnostico">("diagnostico");
+  const [tab, setTab] = useState<"cv" | "diagnostico" | "coach">(
+    "diagnostico",
+  );
 
   const activeVersions: Doc<"resumeVersions">[] = useMemo(() => {
     if (!resumes) return [];
@@ -536,6 +729,7 @@ export default function Dashboard() {
                 [
                   ["diagnostico", "Diagnóstico"],
                   ["cv", "Mi CV"],
+                  ["coach", "Coach"],
                 ] as const
               ).map(([key, label]) => (
                 <button
@@ -567,6 +761,7 @@ export default function Dashboard() {
                 </div>
               )}
               {tab === "cv" && <MiCv profile={profile} />}
+              {tab === "coach" && <Coach />}
             </div>
 
             <div className="mt-4">

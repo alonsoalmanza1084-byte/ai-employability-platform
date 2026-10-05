@@ -92,6 +92,9 @@ describe("superficie pública vs interna (auditoría A-01/A-02)", () => {
       ["orgs.ts", "removeMember", "mutation"],
       ["orgs.ts", "auditTrail", "query"],
       ["matches.ts", "getForApplication", "query"],
+      ["coach.ts", "getConversation", "query"],
+      ["coach.ts", "startConversation", "mutation"],
+      ["coach.ts", "sendMessage", "action"],
     ];
     for (const [file, fn, kind] of publicEndpoints) {
       expect(exportedFunctionKind(read(file), fn), `${file}.${fn}`).toBe(kind);
@@ -246,6 +249,68 @@ describe("multi-tenancy: toda función pública de org verifica membresía", () 
 });
 
 // ───────────────────────────────────────────────────────────────────────
+// CAREER COACH IA — incremento 1 (solo lectura): guards del módulo nuevo.
+// ───────────────────────────────────────────────────────────────────────
+
+describe("career coach (incremento 1): solo lectura, cuotas y telemetría", () => {
+  const coach = read("coach.ts");
+
+  it("las 3 funciones públicas exigen requireSelf (ownership por sesión)", () => {
+    for (const fn of ["getConversation", "startConversation", "sendMessage"]) {
+      const start = coach.indexOf(`export const ${fn}`);
+      expect(start, `coach.${fn} no existe`).toBeGreaterThanOrEqual(0);
+      const next = coach.indexOf("export const ", start + 10);
+      const scope = next === -1 ? coach.slice(start) : coach.slice(start, next);
+      expect(scope, `coach.${fn} no verifica ownership`).toContain("requireSelf");
+      // Ninguna función pública acepta userId del cliente.
+      expect(scope, `coach.${fn} acepta userId del cliente`).not.toMatch(
+        /args:\s*\{[^}]*userId/,
+      );
+    }
+  });
+
+  it("las cuotas se ENFORZAN antes de llamar a la IA (fail-closed)", () => {
+    expect(coach).toMatch(/thisHour >= LIMITS\.coachMessagesPerHour/);
+    expect(coach).toMatch(/today >= LIMITS\.coachMessagesPerDay/);
+    expect(coach).toMatch(/created >= LIMITS\.coachConversationsPerDay/);
+    // El consumo de cuota (recordUsage) ocurre ANTES del proveedor en el
+    // fuente: un fallo posterior de la IA no devuelve presupuesto.
+    const consume = coach.indexOf("dedupeKey: `coach.message:");
+    const provider = coach.indexOf("getAIProvider");
+    expect(consume).toBeGreaterThan(-1);
+    expect(provider).toBeGreaterThan(consume);
+  });
+
+  it("el coach NUNCA escribe en el perfil ni aplica extracciones", () => {
+    expect(coach).not.toMatch(/(insert|patch)\(\s*\"candidateProfiles\"/);
+    expect(coach).not.toContain("applyExtraction");
+    expect(coach).not.toContain("updateProfile");
+  });
+
+  it("usa únicamente los eventos de auditoría previstos (sin contenido)", () => {
+    const actions = [...coach.matchAll(/action: \"(coach\.[a-z.]+)\"/g)].map(
+      (m) => m[1],
+    );
+    expect(new Set(actions)).toEqual(
+      new Set([
+        "coach.session.start",
+        "coach.message.create",
+        "coach.ai.failed",
+      ]),
+    );
+    // Los límites se registran como securityEvent (convención de cv.upload).
+    expect(coach).toMatch(/kind: \"rate_limited\"/);
+    // Telemetría: solo códigos cerrados, jamás el mensaje crudo del proveedor.
+    expect(coach).toContain("AI_ERROR_CODES");
+  });
+
+  it("las lecturas están acotadas (.take, sin .collect()) y sin v.any()", () => {
+    expect(stripComments(coach)).not.toMatch(/\.collect\(\)/);
+    expect(stripComments(coach)).not.toMatch(/v\.any\(\)/);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
 // AUDITORÍA #2 — hardening estructural verificado estáticamente.
 // ───────────────────────────────────────────────────────────────────────
 
@@ -329,6 +394,15 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
       "orgs.ts:auditTrail": "query", // auditoría #3: trail de auditoría solo org_admin
       // account (privacidad, auditoría #2)
       "account.ts:deleteAccount": "mutation",
+      // coach (Career Coach IA — incremento 1: SOLO LECTURA).
+      // Públicas con requireSelf (ownership por sesión); las internals solo
+      // son invocables desde el action sendMessage.
+      "coach.ts:getConversation": "query",
+      "coach.ts:startConversation": "mutation",
+      "coach.ts:sendMessage": "action",
+      "coach.ts:prepareSend": "internalMutation",
+      "coach.ts:appendExchange": "internalMutation",
+      "coach.ts:recordAiFailure": "internalMutation",
     };
 
     // 1) Todo lo exportado en el código real está en el inventario con la

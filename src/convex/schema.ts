@@ -74,6 +74,14 @@ export const certificationValidator = v.object({
   source: v.union(v.literal("ai"), v.literal("human")),
 });
 
+/** Intención clasificada de una respuesta del Career Coach (enum cerrado). */
+export const coachIntentValidator = v.union(
+  v.literal("explain_diagnosis"),
+  v.literal("ask_question"),
+  v.literal("discover_gap"),
+  v.literal("general"),
+);
+
 const schema = defineSchema(
   {
     ...authTables, // do not remove or modify
@@ -150,6 +158,38 @@ const schema = defineSchema(
     })
       .index("by_resume", ["resumeId"])
       .index("by_user", ["userId"]),
+
+    // ─── Career Coach IA (Incremento 1: SOLO LECTURA) ─────────────────────
+    // El coach conversa sobre el perfil y el diagnóstico existentes: NO
+    // escribe en candidateProfiles y NO persiste propuestas de cambio
+    // (propuestas = incremento 2, ADR-012).
+
+    coachConversations: defineTable({
+      userId: v.id("users"),
+      // "active" = hilo vigente al que se puede enviar; "closed" = histórico.
+      status: v.union(v.literal("active"), v.literal("closed")),
+      promptVersion: v.string(),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_status", ["userId", "status"]),
+
+    coachMessages: defineTable({
+      conversationId: v.id("coachConversations"),
+      userId: v.id("users"),
+      role: v.union(v.literal("user"), v.literal("assistant")),
+      // Contenido acotado en servidor (1500 user / 4000 assistant).
+      content: v.string(),
+      // Solo mensajes del asistente (opcionales):
+      intent: v.optional(coachIntentValidator),
+      questions: v.optional(v.array(v.string())),
+      observations: v.optional(v.array(v.string())),
+      confidence: v.optional(v.number()),
+      requestId: v.optional(v.string()),
+      promptVersion: v.optional(v.string()),
+      createdAt: v.number(),
+    }).index("by_conversation", ["conversationId"]),
 
     // ─── Empresa / multi-tenant ──────────────────────────────────────────
 
@@ -299,6 +339,24 @@ const schema = defineSchema(
     })
       .index("by_version", ["resumeVersionId"])
       .index("by_application", ["applicationId"]),
+
+    // Telemetría del Career Coach (espejo de aiExtractions, SIN contenido):
+    // requestId correlaciona la fila con el mensaje del asistente; `error`
+    // guarda SOLO el código cerrado del fallo, nunca el mensaje crudo.
+    aiCoachCalls: defineTable({
+      conversationId: v.id("coachConversations"),
+      userId: v.id("users"),
+      requestId: v.string(),
+      model: v.string(),
+      promptVersion: v.string(),
+      inputTokens: v.number(),
+      outputTokens: v.number(),
+      durationMs: v.number(),
+      ok: v.boolean(),
+      error: v.optional(v.string()),
+    })
+      .index("by_conversation", ["conversationId"])
+      .index("by_user", ["userId"]),
 
     // ─── Observabilidad / seguridad ──────────────────────────────────────
 

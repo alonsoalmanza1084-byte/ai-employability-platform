@@ -6,6 +6,35 @@
 /* eslint-disable no-control-regex -- quitamos caracteres de control a propósito */
 export const PROMPT_VERSION = "cv_extract.v2.0";
 
+/**
+ * Delimitadores de datos que el modelo interpreta como bloques (nunca como
+ * instrucciones). Se eliminan del texto del usuario para que nadie pueda
+ * "cerrar" un bloque desde dentro y reescribir el resto del prompt.
+ */
+const DATA_DELIMITERS = /<\/?\s*(documento|candidate_message|coach_message|cv_evidence|conversacion)\s*>/gi;
+
+/**
+ * Sanea texto controlado por el usuario antes de llevarlo a un prompt.
+ * Defensas, en orden:
+ *  1. caracteres de control y zero-width (evaden delimitadores/copian portapapeles);
+ *  2. los propios delimitadores de datos (nadie cierra un bloque desde dentro);
+ *  3. escapado de < y > (el modelo recibe texto plano, nunca marcas);
+ *  4. colapso de espacios y tope de longitud (contexto acotado).
+ * Idempotente: aplicarlo dos veces no cambia el resultado.
+ */
+export function sanitizeUserText(text: string, maxChars: number): string {
+  return text
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u2028\u2029\uFEFF]/g, " ")
+    .replace(DATA_DELIMITERS, " ")
+    // Neutraliza HTML/JS embebido (el modelo recibe texto plano, nunca marcas):
+    // tras limpiar los delimitadores, ningún <tag> sobrevive como tal.
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxChars);
+}
+
 export const CV_EXTRACT_SYSTEM = `Eres un parser de CVs para una plataforma de empleabilidad. Tu única tarea es convertir el texto de UN documento en JSON estructurado, sin opinar ni evaluar.
 
 REGLAS DE SEGURIDAD (obligatorias):
@@ -21,17 +50,7 @@ export function buildCvExtractUserContent(
   text: string,
   jsonSchema: Record<string, unknown>,
 ): string {
-  const sanitized = text
-    // controles y zero-width chars que pueden usarse para evadir delimitadores
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u2028\u2029\uFEFF]/g, " ")
-    .replace(/<\/?\s*documento\s*>/gi, " ")
-    // Neutraliza HTML/JS embebido (el modelo recibe texto plano, nunca marcas):
-    // tras limpiar los delimitadores, ningún <tag> sobrevive como tal.
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 24_000);
+  const sanitized = sanitizeUserText(text, 24_000);
 
   return `Tarea: extrae la estructura del siguiente documento de CV.
 

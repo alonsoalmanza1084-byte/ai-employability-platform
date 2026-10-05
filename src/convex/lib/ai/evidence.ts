@@ -19,6 +19,7 @@
  * provienen del CV real.
  */
 import type { CvExtraction } from "./schemas";
+import type { CareerCoachResponse } from "./coach_schemas";
 
 export function normText(s: string): string {
   return s
@@ -272,5 +273,54 @@ export function verifyExtractionAgainstSource(
     filteredCertifications,
     filteredYearsExperience,
     inflatedSkillLevels,
+  };
+}
+
+/**
+ * Solapamiento mínimo de tokens para que una observación del coach se
+ * considere sustentada por la evidencia (substring literal → siempre).
+ * 0.4 es deliberadamente laxo respecto al 0.6 de la extracción (la prosa del
+ * coach parafrasea) pero todavía descarta afirmaciones fabricadas: un dato
+ * inventado comparte ~0 tokens con el perfil real.
+ */
+export const COACH_EVIDENCE_MIN_OVERLAP = 0.4;
+
+/**
+ * Post-check determinista del Career Coach (misma filosofía que
+ * `verifyExtractionAgainstSource`, AI_SECURITY.md §6):
+ *
+ *  1. `observations` son AFIRMACIONES sobre el perfil → solo se conservan si
+ *     aparecen en la evidencia real (substring normalizado o ≥40% de sus
+ *     tokens presentes). Una observación descartada baja la confianza a ≤0.5
+ *     (fail-closed: preferimos recortar a afirmar algo no verificable).
+ *  2. `message` (prosa) y `questions` NO se filtran: son explicaciones y
+ *     preguntas, no hechos verificables de forma determinista. Esa limitación
+ *     está documentada en docs/CAREER_COACH_SECURITY.md.
+ *
+ * El modelo puede devolver observaciones vacías: eso es válido (0 afirmaciones).
+ */
+export function verifyCoachResponse(
+  response: CareerCoachResponse,
+  evidenceText: string,
+): CareerCoachResponse {
+  const normalized = normText(evidenceText);
+  const evidenceTokens = new Set(tokens(evidenceText));
+
+  const observations = response.observations.filter((o) => {
+    const target = normText(o);
+    if (target.length > 0 && normalized.includes(target)) return true;
+    const toks = tokens(o).filter((t) => t.length >= 3);
+    if (toks.length === 0) return false;
+    const hits = toks.filter((t) => evidenceTokens.has(t)).length;
+    return hits / toks.length >= COACH_EVIDENCE_MIN_OVERLAP;
+  });
+
+  const dropped = response.observations.length - observations.length;
+  return {
+    ...response,
+    observations,
+    confidence: dropped > 0
+      ? Math.min(response.confidence, 0.5)
+      : response.confidence,
   };
 }

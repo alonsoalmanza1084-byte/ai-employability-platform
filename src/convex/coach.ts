@@ -1,10 +1,15 @@
 /**
- * Career Coach IA — Incremento 1 (SOLO LECTURA, decisión de producto).
+ * Career Coach IA — Incremento 1 (SOLO LECTURA) + Incremento 2 (PROPOSALS).
  *
- * El coach conversa sobre el perfil y el diagnóstico EXISTENTES:
- *  - NO escribe en candidateProfiles (no existe ninguna ruta desde aquí),
- *  - NO persiste propuestas de edición (incremento 2, ADR-012),
- *  - NO discute salarios ni atributos protegidos (prompt V1).
+ * Incremento 1 (read-only, decidido): el coach conversa sobre el perfil y el
+ * diagnóstico EXISTENTES; NO escribe en candidateProfiles (no existe ninguna
+ * ruta desde aquí); NO discute salarios ni atributos protegidos (prompt V1).
+ *
+ * Incremento 2 (evidence + proposals, ADR-014): el LLM puede proponer claims/
+ * evidencia/propuestas REVISABLES sobre el perfil, pero NUNCA las aplica al
+ * perfil. El flujo es: LLM → CLAIM → EVIDENCE (verificado servidor) →
+ * PROPOSAL (pendiente, rechazable por el dueño). La confirmación/aceptación
+ * que modifique el perfil queda para un incremento posterior.
  *
  * Flujo de `sendMessage` (action):
  *   1. `prepareSend` (internalMutation): ownership + validación + techos
@@ -18,7 +23,16 @@
  *      asistente + telemetría `aiCoachCalls` + audit, todo en una transacción.
  *      Si la IA falla, NADA se persiste (solo `recordAiFailure` deja el
  *      código cerrado del fallo en telemetría + audit).
+ *
+ * Flujo de propuestas (incremento 2):
+ *   - `createProposal` (action): claim+evidence+proposal en una transacción,
+ *     ownership + estado inicial + telemetría + audit. Solo el dueño de la
+ *     conversación puede crear (identity from session).
+ *   - `rejectProposal` (action): transición estado pending→rejected del
+ *     dueño; NO toca el perfil ni la evidencia.
+ *   - `listProposals` / `getProposal` (query): solo filas del actor.
  */
+
 import { v } from "convex/values";
 import {
   action,
@@ -47,6 +61,11 @@ import {
   careerCoachResponseSchema,
   type CareerCoachResponse,
 } from "./lib/ai/coach_schemas";
+import {
+  careerCoachJsonSchemaWithProposals,
+  careerCoachResponseWithProposalsSchema,
+  type CareerCoachResponseWithProposals,
+} from "./lib/ai/proposal_schemas";
 import { sanitizeUserText } from "./lib/ai/prompts";
 import { normalizeAiJson } from "./lib/ai/validators";
 import { verifyCoachResponse } from "./lib/ai/evidence";
@@ -81,6 +100,125 @@ const AI_ERROR_CODES = new Set<string>([
   "TIMEOUT",
   "CONTENT_FILTERED",
 ]);
+
+/** Límite de propuestas por conversación (sin cuota IA adicional: la cuota de
+ * mensajes ya gasta tokens; aquí limitamos almacenamiento/abuso). */
+export const MAX_PROPOSALS_PER_CONVERSATION = 6;
+
+/** Duración de vida de una propuesta pendiente sin interacción (no purga
+ * automática: RETENTION_POLICY = NOT_DEFINED; solo techo de edad para la UI). */
+export const PROPOSAL_PENDING_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+// ─── Convex v-validators para el payload de proposals (espejo de Zod) ───
+// Los esquemas Zod viven en proposal_schemas.ts; aquí los reinterpretamos
+// como v-validators para que convex/values los acepte en args. Ningún campo
+// puede autodeclararse verified/accepted: el backend asigna estado.
+
+const coachClaimTypeValidator = v.union(
+  v.literal("skill"),
+  v.literal("experience"),
+  v.literal("achievement"),
+  v.literal("education"),
+  v.literal("certification"),
+  v.literal("profile_summary"),
+  v.literal("gap"),
+  v.literal("opportunity"),
+);
+
+const coachClaimSourceRefValidator = v.union(
+  v.literal("profile"),
+  v.literal("diagnosis"),
+  v.literal("conversation"),
+);
+
+const coachEvidenceRefValidator = v.object({
+  sourceType: coachClaimSourceRefValidator,
+  sourceId: v.string(),
+  excerpt: v.string(),
+  confidence: v.number(),
+});
+
+const coachClaimValidator = v.object({
+  statement: v.string(),
+  type: coachClaimTypeValidator,
+  sourceRef: coachClaimSourceRefValidator,
+  evidenceRefs: v.array(v.string()).max(6),
+  confidence: v.number(),
+});
+
+const coachProposalEvidenceValidator = v.array(coachEvidenceRefValidator).min(1).max(6);
+
+const coachProposalValidator = v.object({
+  originalText: v.optional(v.string()),
+  proposedText: v.string(),
+  evidence: coachProposalEvidenceValidator,
+  confidence: v.number(),
+});
+
+/** Tipos de resultado explícitos (evitan inferencia circular api interna). */
+
+type ProposalCreateResult =
+  | { ok: false; code: string; reason: string }
+  | {
+      ok: true
+      proposalId: import("./_generated/dataModel").Id<"coachProposals">
+      claimId: import("./_generated/dataModel").Id<"coachClaims">
+    };
+
+type ProposalRejectResult =
+  | { ok: false; code: string; reason: string }
+  | { ok: true };
+
+type ProposalListResult = {
+  proposals: Array<{
+    _id: import("./_generated/dataModel").Id<"coachProposals">
+    claimId: import("./_generated/dataModel").Id<"coachClaims">
+    proposedText: string
+    originalText: string | undefined
+    status: "pending" | "rejected"
+    confidence: number
+    promptVersion: string
+    createdAt: number
+    updatedAt: number
+  }>
+};
+
+type ProposalGetResult =
+  | { ok: false; code: string; reason: string }
+  | {
+      ok: true
+      proposal: {
+        _id: import("./_generated/dataModel").Id<"coachProposals">
+        claimId: import("./_generated/dataModel").Id<"coachClaims">
+        userId: import("./_generated/dataModel").Id<"users">
+        conversationId: import("./_generated/dataModel").Id<"coachConversations">
+        proposedText: string
+        originalText: string | undefined
+        status: "pending" | "rejected"
+        confidence: number
+        promptVersion: string
+        createdAt: number
+        updatedAt: number
+      }
+      claim: {
+        _id: import("./_generated/dataModel").Id<"coachClaims">
+        claimText: string
+        originalClaim: string | undefined
+        status: "verified" | "rejected"
+        confidence: number
+        promptVersion: string
+        createdAt: number
+        updatedAt: number
+      }
+      evidence: Array<{
+        _id: import("./_generated/dataModel").Id<"coachEvidence">
+        sourceType: "profile" | "diagnosis" | "conversation"
+        sourceId: string
+        excerpt: string
+        confidence: number
+        createdAt: number
+      }>
+    };
 
 /**
  * Tipo explícito del resultado de `prepareSend`. Se declara aquí para romper la
@@ -676,6 +814,531 @@ export const sendMessage = action({
       outputTokens: aiResult.usage?.outputTokens ?? 0,
       durationMs: aiResult.durationMs,
     });
+
+    return { ok: true };
+  },
+});
+
+/**
+ * Persiste un bundle claim→evidence→proposal en UNA transacción atómica.
+ * Dedup por (conversationId, claimText): reintentos/idempotencia del proveedor
+ * no generan proposals duplicadas. Solo el dueño de la conversación puede
+ * crear (identity from session, revalidado aquí).
+ *
+ * Evidence verification fail-closed: cada evidenceRef del LLM se valida contra
+ * documentos REALES (perfil/diagnóstico/conversación) existentes y con contenido
+ * suficiente; las que no se verifican se descartan (no se persiste evidencia
+ * inventada). Si no queda evidencia verificable → se rechaza el claim y no se
+ * crea proposal (insufficient_evidence es salida válida).
+ *
+ * Regla de no-invención (INV-014/019): el LLM puede afirmar y proponer; el
+ * sistema decide qué persiste. Ningún campo puede autodeclararse verified/accepted.
+ */
+export const createProposalBundle = internalMutation({
+  args: {
+    conversationId: v.id("coachConversations"),
+    requestId: v.string(),
+    claim: coachClaimValidator,
+    proposal: coachProposalValidator,
+    model: v.string(),
+    promptVersion: v.string(),
+    inputTokens: v.number(),
+    outputTokens: v.number(),
+    durationMs: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireSelf(ctx);
+
+    // Ownership: la conversación debe ser del actor y activa.
+    const conversation = await ctx.db.get(args.conversationId);
+    if (!conversation || conversation.userId !== userId) {
+      throw new Error("NOT_FOUND");
+    }
+    if (conversation.status !== "active") {
+      throw new Error("CONVERSATION_CLOSED");
+    }
+
+    // Dedup por claimText+conversation: reintentos del proveedor no duplican.
+    const existingClaim = await ctx.db
+      .query("coachClaims")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId),
+      )
+      .first();
+    if (existingClaim && existingClaim.claimText === args.claim.statement) {
+      return {
+        ok: false,
+        code: "DUPLICATE",
+        reason:
+          "Esta sugerencia ya fue registrada (idempotencia contra reintentos del proveedor).",
+      };
+    }
+
+    // Límite de propuestas por conversación (sin cuota IA nueva).
+    const proposalsCount = await ctx.db
+      .query("coachProposals")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId),
+      )
+      .take(MAX_PROPOSALS_PER_CONVERSATION + 1);
+    if (proposalsCount.length >= MAX_PROPOSALS_PER_CONVERSATION) {
+      await securityEvent(ctx, {
+        kind: "rate_limited",
+        userId,
+        detail: "coach.proposal per-conversation limit",
+      });
+      return {
+        ok: false,
+        code: "RATE_LIMITED",
+        reason:
+          `Alcanzaste el límite de ${MAX_PROPOSALS_PER_CONVERSATION} sugerencias por conversación.`,
+      };
+    }
+
+    // ── Evidence verification FAIL-CLOSED ────────────────────────────────
+    // Cada evidenceRef del LLM se valida contra un documento REAL y existente.
+    // Fuentes permitidas: profile, diagnosis, conversation (solo los mensajes
+    // del propio usuario en esta conversación, para no exfiltrar otros hilos).
+    const verifiedEvidence: Array<{
+      sourceType: "profile" | "diagnosis" | "conversation"
+      sourceId: string
+      excerpt: string
+      confidence: number
+    }> = [];
+
+    const profile = await ctx.db
+      .query("candidateProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    if (!profile) {
+      return {
+        ok: false,
+        code: "NO_PROFILE",
+        reason:
+          "No hay perfil para validar la evidencia (la sugerencia requiere un perfil existente).",
+      };
+    }
+
+    const now = Date.now();
+    for (const ref of args.proposal.evidence) {
+      // sourceId debe parecer un id de Convex (fail-closed sin scanner de todos).
+      if (!/^[a-z0-9]{20,40}$/.test(ref.sourceId)) {
+        continue; // se descarta silenciosamente; no se persiste
+      }
+      let sourceType: "profile" | "diagnosis" | "conversation" =
+        ref.sourceType as "profile" | "diagnosis" | "conversation";
+      let sourceDocExists = false;
+
+      if (sourceType === "profile") {
+        const target = await ctx.db.get(ref.sourceId);
+        sourceDocExists =
+          target && target._type === "candidateProfiles" && target.userId === userId;
+      } else if (sourceType === "diagnosis") {
+        // El diagnóstico no es tabla física: se considera presente si existe el
+        // perfil (el diagnóstico se computa en derivación). Registramos la
+        // referencia con el id del perfil como fuente.
+        sourceDocExists = profile._id === ref.sourceId;
+        sourceType = "profile"; // normalizamos a la fuente real
+      } else if (sourceType === "conversation") {
+        const target = await ctx.db.get(ref.sourceId);
+        sourceDocExists =
+          target &&
+          target._type === "coachMessages" &&
+          target.conversationId === args.conversationId &&
+          target.userId === userId &&
+          target.role === "assistant";
+      }
+
+      if (!sourceDocExists) {
+        continue; // evidencia no verificable → no se persiste
+      }
+
+      // Contenido acotado + sanitizado (anti contamina el corpus de evidencia).
+      verifiedEvidence.push({
+        sourceType,
+        sourceId: ref.sourceId.slice(0, 80),
+        excerpt: sanitizeUserText(ref.excerpt, 400).slice(0, 400),
+        confidence: Math.max(0, Math.min(1, ref.confidence)),
+      });
+    }
+
+    if (verifiedEvidence.length === 0) {
+      // insufficient_evidence: salida válida, no se crea nothing.
+      await ctx.runMutation(internal.coach.recordAiFailure, {
+        conversationId: args.conversationId,
+        requestId: args.requestId.slice(0, 40),
+        code: "SCHEMA_INVALID",
+        model: args.model.slice(0, 60),
+        promptVersion: args.promptVersion.slice(0, 60),
+        durationMs: args.durationMs,
+        inputTokens: Math.max(0, args.inputTokens),
+        outputTokens: Math.max(0, args.outputTokens),
+      });
+      await audit(ctx, {
+        actorUserId: userId,
+        action: "coach.proposal.validation_failed",
+        targetType: "coachConversation",
+        targetId: args.conversationId,
+        metadata: { reason: "insufficient_verified_evidence" },
+      });
+      return {
+        ok: false,
+        code: "SCHEMA_INVALID",
+        reason:
+          "No había evidencia verificable suficiente para registrar esta sugerencia (insufficient_evidence).",
+      };
+    }
+
+    // Persistamos claim, evidence y proposal en una sola transacción.
+    const claimId = await ctx.db.insert("coachClaims", {
+      userId,
+      conversationId: args.conversationId,
+      claimText: sanitizeUserText(args.claim.statement, 600).slice(0, 600),
+      originalClaim: args.claim.statement.slice(0, 600),
+      status: "verified",
+      confidence: Math.max(0, Math.min(1, args.claim.confidence)),
+      promptVersion: args.promptVersion.slice(0, 60),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    for (const ev of verifiedEvidence) {
+      await ctx.db.insert("coachEvidence", {
+        claimId,
+        sourceType: ev.sourceType,
+        sourceId: ev.sourceId,
+        excerpt: ev.excerpt,
+        confidence: ev.confidence,
+        createdAt: now,
+      });
+    }
+
+    const proposalId = await ctx.db.insert("coachProposals", {
+      userId,
+      claimId,
+      conversationId: args.conversationId,
+      proposedText: sanitizeUserText(
+        args.proposal.proposedText,
+        600,
+      ).slice(0, 600),
+      originalText: args.proposal.originalText?.slice(0, 600),
+      status: "pending",
+      confidence: Math.max(0, Math.min(1, args.proposal.confidence)),
+      promptVersion: args.promptVersion.slice(0, 60),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await audit(ctx, {
+      actorUserId: userId,
+      action: "coach.proposal.create",
+      targetType: "coachConversation",
+      targetId: args.conversationId,
+      metadata: {
+        proposalId,
+        claimId,
+        confidence: Math.max(
+          0,
+          Math.min(1, args.proposal.confidence),
+        ).toString(),
+      },
+    });
+
+    await ctx.db.patch(args.conversationId, { updatedAt: now });
+
+    return {
+      ok: true,
+      proposalId,
+      claimId,
+    };
+  },
+});
+
+/**
+ * Reject de una proposal por su dueño. Transición pending→rejected. NO toca el
+ * perfil ni la evidencia (INV-013). Solo la status se cambia; el claim sigue
+ * para trazabilidad.
+ */
+export const rejectProposal = internalMutation({
+  args: {
+    proposalId: v.id("coachProposals"),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireSelf(ctx);
+    const proposal = await ctx.db.get(args.proposalId);
+    if (
+      !proposal ||
+      proposal.userId !== userId ||
+      proposal.status !== "pending"
+    ) {
+      throw new Error("NOT_FOUND");
+    }
+    if (proposal.status !== "pending") {
+      throw new Error("INVALID_STATE");
+    }
+    await ctx.db.patch(args.proposalId, {
+      status: "rejected",
+      updatedAt: Date.now(),
+    });
+    await audit(ctx, {
+      actorUserId: userId,
+      action: "coach.proposal.reject",
+      targetType: "coachConversation",
+      targetId: proposal.conversationId,
+      metadata: { proposalId: args.proposalId },
+    });
+    return { ok: true };
+  },
+});
+
+/**
+ * Lista las propuestas pendientes/rechazadas del actor en la conversación.
+ */
+export const listProposals = query({
+  args: { conversationId: v.id("coachConversations") },
+  handler: async (ctx, args) => {
+    const userId = await requireSelf(ctx);
+    const conversation = await ctx.db.get(args.conversationId);
+    if (!conversation || conversation.userId !== userId) {
+      return { proposals: [] };
+    }
+    const rows = await ctx.db
+      .query("coachProposals")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId),
+      )
+      .take(LIMITS.maxCoachMessagesPerConversation);
+    return {
+      proposals: rows
+        .filter((p) => p.userId === userId)
+        .map((p) => ({
+          _id: p._id,
+          claimId: p.claimId,
+          proposedText: p.proposedText,
+          originalText: p.originalText,
+          status: p.status,
+          confidence: p.confidence,
+          promptVersion: p.promptVersion,
+          createdAt: p.createdAt,
+          updatedAt: p.updatedAt,
+        })),
+    };
+  },
+});
+
+/**
+ * Revisa una propuesta y su claim/evidence subyacentes. Solo el dueño.
+ */
+export const getProposal = query({
+  args: { proposalId: v.id("coachProposals") },
+  handler: async (ctx, args) => {
+    const userId = await requireSelf(ctx);
+    const proposal = await ctx.db.get(args.proposalId);
+    if (
+      !proposal ||
+      proposal.userId !== userId
+    ) {
+      return { ok: false, code: "NOT_FOUND", reason: "Sugerencia no encontrada." };
+    }
+    const claim = await ctx.db.get(proposal.claimId);
+    const evidence = await ctx.db
+      .query("coachEvidence")
+      .withIndex("by_claim", (q) => q.eq("claimId", proposal.claimId))
+      .take(10);
+    return {
+      ok: true,
+      proposal: {
+        _id: proposal._id,
+        claimId: proposal.claimId,
+        userId: proposal.userId,
+        conversationId: proposal.conversationId,
+        proposedText: proposal.proposedText,
+        originalText: proposal.originalText,
+        status: proposal.status,
+        confidence: proposal.confidence,
+        promptVersion: proposal.promptVersion,
+        createdAt: proposal.createdAt,
+        updatedAt: proposal.updatedAt,
+      },
+      claim: {
+        _id: claim!._id,
+        claimText: claim!.claimText,
+        originalClaim: claim!.originalClaim,
+        status: claim!.status,
+        confidence: claim!.confidence,
+        promptVersion: claim!.promptVersion,
+        createdAt: claim!.createdAt,
+        updatedAt: claim!.updatedAt,
+      },
+      evidence: evidence.map((e) => ({
+        _id: e._id,
+        sourceType: e.sourceType,
+        sourceId: e.sourceId,
+        excerpt: e.excerpt,
+        confidence: e.confidence,
+        createdAt: e.createdAt,
+      })),
+    };
+  },
+});
+
+/**
+ * Envía un mensaje y devuelve la respuesta del coach.
+ * Si el LLM devuelve propuestas, se persisten (crear proposal — no aplicar).
+ */
+export const sendMessageWithProposals = action({
+  args: {
+    conversationId: v.id("coachConversations"),
+    message: v.string(),
+  },
+  handler: async (ctx, args): Promise<SendMessageResult> => {
+    await requireSelf(ctx);
+    const requestId = `${Date.now().toString(36)}-${Math.floor(
+      Math.random() * 0x7fffffff,
+    ).toString(36)}`.slice(0, 40);
+
+    const prep: CoachPrepareResult | null = await ctx
+      .runMutation(internal.coach.prepareSend, {
+        conversationId: args.conversationId,
+        message: args.message,
+        requestId,
+      })
+      .catch(() => null);
+    if (!prep) {
+      return {
+        ok: false,
+        code: "INTERNAL",
+        reason: "No se pudo preparar tu mensaje. Reintenta.",
+      };
+    }
+    if (!prep.ok) return prep;
+
+    const userContent = buildCareerCoachUserContent({
+      evidence: prep.evidenceText,
+      history: prep.history,
+      message: prep.userMessage,
+      jsonSchema: careerCoachJsonSchemaWithProposals,
+    });
+
+    const startedAt = Date.now();
+    let aiResult: AIResponse<CareerCoachResponseWithProposals> | null = null;
+    try {
+      const provider = await (
+        await import("./lib/ai/openai_provider")
+      ).getAIProvider();
+      aiResult = await provider.complete(
+        {
+          task: "career_coach",
+          system: CAREER_COACH_SYSTEM_PROMPT_V1,
+          userContent,
+          maxOutputTokens: LIMITS.coachMaxOutputTokens,
+          temperature: 0.3,
+          responseJsonSchema: careerCoachJsonSchemaWithProposals,
+        },
+        (raw) =>
+          careerCoachResponseWithProposalsSchema.parse(
+            normalizeAiJson(JSON.parse(raw)),
+          ),
+      );
+    } catch {
+      aiResult = null;
+    }
+
+    if (!aiResult) {
+      await ctx.runMutation(internal.coach.recordAiFailure, {
+        conversationId: args.conversationId,
+        requestId,
+        code: "PROVIDER_ERROR",
+        model: "unknown",
+        promptVersion: CAREER_COACH_PROMPT_VERSION,
+        durationMs: Date.now() - startedAt,
+        inputTokens: 0,
+        outputTokens: 0,
+      });
+      return {
+        ok: false,
+        code: "PROVIDER_ERROR",
+        reason: failReason("PROVIDER_ERROR"),
+      };
+    }
+    if (!aiResult.ok) {
+      await ctx.runMutation(internal.coach.recordAiFailure, {
+        conversationId: args.conversationId,
+        requestId,
+        code: aiResult.error.code,
+        model: aiResult.model,
+        promptVersion: CAREER_COACH_PROMPT_VERSION,
+        durationMs: aiResult.durationMs,
+        inputTokens: aiResult.usage?.inputTokens ?? 0,
+        outputTokens: aiResult.usage?.outputTokens ?? 0,
+      });
+      return {
+        ok: false,
+        code: aiResult.error.code,
+        reason: failReason(aiResult.error.code),
+      };
+    }
+
+    // Grounding heurístico con las observaciones.
+    const verified = verifyCoachResponse(aiResult.data, prep.evidenceText);
+    const reply: CareerCoachResponse = {
+      message: verified.message,
+      intent: verified.intent,
+      questions: verified.questions.slice(0, 5),
+      observations: verified.observations.slice(0, 8),
+      confidence: verified.confidence,
+    };
+
+    await ctx.runMutation(internal.coach.appendExchange, {
+      conversationId: args.conversationId,
+      requestId,
+      userMessage: prep.userMessage,
+      assistant: reply,
+      model: aiResult.model,
+      promptVersion: CAREER_COACH_PROMPT_VERSION,
+      inputTokens: aiResult.usage?.inputTokens ?? 0,
+      outputTokens: aiResult.usage?.outputTokens ?? 0,
+      durationMs: aiResult.durationMs,
+    });
+
+    // Persistir propuestas (si las hay) una por una (sin bulk).
+    if (aiResult.data.proposals && aiResult.data.proposals.length > 0) {
+      for (const proposal of aiResult.data.proposals.slice(0, MAX_PROPOSALS_PER_CONVERSATION)) {
+        // Cada proposal necesita un claim validado; si la evidencia no cierra,
+        // se rechaza individualmente (insufficient_evidence).
+        try {
+          await ctx.runMutation(internal.coach.createProposalBundle, {
+            conversationId: args.conversationId,
+            requestId: `${requestId}-${proposal.proposedText.slice(0,20)}`,
+            claim: {
+              statement: proposal.proposedText,
+              type: "profile_summary",
+              sourceRef: "profile",
+              evidenceRefs: proposal.evidence.map((e) => e.excerpt),
+              confidence: proposal.confidence,
+            },
+            proposal: {
+              originalText: proposal.originalText,
+              proposedText: proposal.proposedText,
+              evidence: proposal.evidence.map((e) => ({
+                sourceType: e.sourceType as "profile" | "diagnosis" | "conversation",
+                sourceId: e.sourceId,
+                excerpt: e.excerpt,
+                confidence: e.confidence,
+              })),
+              confidence: proposal.confidence,
+            },
+            model: aiResult.model,
+            promptVersion: CAREER_COACH_PROMPT_VERSION,
+            inputTokens: aiResult.usage?.inputTokens ?? 0,
+            outputTokens: aiResult.usage?.outputTokens ?? 0,
+            durationMs: aiResult.durationMs,
+          });
+        } catch {
+          // Fallo individual de una proposal no compromete el mensaje.
+        }
+      }
+    }
 
     return { ok: true };
   },

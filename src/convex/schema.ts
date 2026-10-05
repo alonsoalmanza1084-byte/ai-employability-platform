@@ -431,6 +431,45 @@ const schema = defineSchema(
       .index("by_dedupe", ["dedupeKey"])
       .index("by_userId_and_kind", ["userId", "kind"])
       .index("by_organizationId_and_kind", ["organizationId", "kind"]),
+    // ─── Career Coach IA: propuestas y evidencia (incremento 2) ───────────
+    // Cada proposal deriva de un claim verificado contra evidencia REAL (perfil/
+    // diagnóstico/conversación) y es revisable por su dueño. Incremento 2 NO
+    // modifica candidateProfiles (ADR-014); la aplicación de una proposal
+    // aceptada queda para un incremento posterior.
+    coachClaims: defineTable({
+      userId: v.id("users"),
+      conversationId: v.id("coachConversations"),
+      claimText: v.string(),
+      originalClaim: v.optional(v.string()),
+      status: v.union(v.literal("verified"), v.literal("rejected")),
+      confidence: v.number(),
+      promptVersion: v.string(),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    }).index("by_user", ["userId"]).index("by_conversation", ["conversationId"]),
+
+    coachEvidence: defineTable({
+      claimId: v.id("coachClaims"),
+      sourceType: v.union(v.literal("profile"), v.literal("diagnosis"), v.literal("conversation")),
+      sourceId: v.string(),
+      excerpt: v.string(),
+      confidence: v.number(),
+      createdAt: v.number(),
+    }).index("by_claim", ["claimId"]),
+
+    coachProposals: defineTable({
+      userId: v.id("users"),
+      claimId: v.id("coachClaims"),
+      conversationId: v.id("coachConversations"),
+      proposedText: v.string(),
+      originalText: v.optional(v.string()),
+      status: v.union(v.literal("pending"), v.literal("rejected")),
+      confidence: v.number(),
+      promptVersion: v.string(),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    }).index("by_user", ["userId"]).index("by_conversation", ["conversationId"]).index("by_claim", ["claimId"]),
+
   },
   // Validación de schema ACTIVADA (auditoría #2): Convex valida en runtime
   // que todo documento nuevo o modificado coincide con este schema.

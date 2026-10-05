@@ -66,9 +66,11 @@ export const deleteAccount = mutation({
       await ctx.db.delete(r._id);
     }
 
-    // 2-bis. Career Coach: conversaciones, mensajes y telemetría propios.
+    // 2-bis. Career Coach: conversaciones, mensajes, telemetría y las
+    //     entidades de propuestas/claims/evidencia propias (incremento 2).
     //     Lecturas acotadas por los techos estructurales de LIMITS (el margen
     //     +coachMessagesPerHour cubre la ráfaga máxima de envíos en paralelo).
+    //     Bd de propuestas: se borran por userId (ownership) con techo acotado.
     const conversations = await ctx.db
       .query("coachConversations")
       .withIndex("by_user", (q) => q.eq("userId", userId))
@@ -77,6 +79,8 @@ export const deleteAccount = mutation({
       LIMITS.maxCoachMessagesPerConversation + LIMITS.coachMessagesPerHour;
     const COACH_CALLS_READ_MAX =
       LIMITS.maxCoachCallsPerConversation + LIMITS.coachMessagesPerHour + 2;
+    const COACH_PROPOSALS_READ_MAX = 500; // techo de borrado por usuario
+    const COACH_CLAIMS_READ_MAX = 500;
     for (const c of conversations) {
       const coachMsgs = await ctx.db
         .query("coachMessages")
@@ -94,6 +98,33 @@ export const deleteAccount = mutation({
       for (const t of coachCalls) await ctx.db.delete(t._id);
       await ctx.db.delete(c._id);
     }
+    // Claims/evidence/proposals del usuario (incremento 2). Se leen por userId
+    // con índice explícito; el techo evita scans sin cota.
+    const claims = await ctx.db
+      .query("coachClaims")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .take(COACH_CLAIMS_READ_MAX);
+    for (const cl of claims) {
+      // Evidencia ligada al claim.
+      const ev = await ctx.db
+        .query("coachEvidence")
+        .withIndex("by_claim", (q) => q.eq("claimId", cl._id))
+        .take(COACH_PROPOSALS_READ_MAX);
+      for (const e of ev) await ctx.db.delete(e._id);
+      // Proposals ligadas al claim.
+      const props = await ctx.db
+        .query("coachProposals")
+        .withIndex("by_claim", (q) => q.eq("claimId", cl._id))
+        .take(COACH_PROPOSALS_READ_MAX);
+      for (const p of props) await ctx.db.delete(p._id);
+      await ctx.db.delete(cl._id);
+    }
+    // Propuestas huérfanas (por userId directo, por si acaso; ownership).
+    const orphanProps = await ctx.db
+      .query("coachProposals")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .take(COACH_PROPOSALS_READ_MAX);
+    for (const p of orphanProps) await ctx.db.delete(p._id);
 
     // 3) Membresías: revocación de acceso (no son datos personales del
     //    usuario sino vínculos; sin ellas requireMembership niega todo).

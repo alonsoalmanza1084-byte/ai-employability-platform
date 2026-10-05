@@ -41,7 +41,7 @@ import {
   query,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { coachIntentValidator } from "./schema";
 import { requireSelf } from "./lib/rbac";
 import { audit, countUsage, recordUsage, securityEvent } from "./lib/audit";
@@ -142,11 +142,11 @@ const coachClaimValidator = v.object({
   statement: v.string(),
   type: coachClaimTypeValidator,
   sourceRef: coachClaimSourceRefValidator,
-  evidenceRefs: v.array(v.string()).max(6),
+  evidenceRefs: v.array(v.string()),
   confidence: v.number(),
 });
 
-const coachProposalEvidenceValidator = v.array(coachEvidenceRefValidator).min(1).max(6);
+const coachProposalEvidenceValidator = v.array(coachEvidenceRefValidator);
 
 const coachProposalValidator = v.object({
   originalText: v.optional(v.string()),
@@ -930,23 +930,20 @@ export const createProposalBundle = internalMutation({
       let sourceDocExists = false;
 
       if (sourceType === "profile") {
-        const target = await ctx.db.get(ref.sourceId);
-        sourceDocExists =
-          target && target._type === "candidateProfiles" && target.userId === userId;
+        const target = await ctx.db.get(ref.sourceId as Id<"candidateProfiles">);
+        sourceDocExists = !!(target && (target as Doc<"candidateProfiles">).userId === userId);
       } else if (sourceType === "diagnosis") {
         // El diagnóstico no es tabla física: se considera presente si existe el
         // perfil (el diagnóstico se computa en derivación). Registramos la
         // referencia con el id del perfil como fuente.
-        sourceDocExists = profile._id === ref.sourceId;
+        sourceDocExists = (profile as Doc<"candidateProfiles">)._id === ref.sourceId;
         sourceType = "profile"; // normalizamos a la fuente real
       } else if (sourceType === "conversation") {
-        const target = await ctx.db.get(ref.sourceId);
-        sourceDocExists =
-          target &&
-          target._type === "coachMessages" &&
-          target.conversationId === args.conversationId &&
-          target.userId === userId &&
-          target.role === "assistant";
+        const target = await ctx.db.get(ref.sourceId as Id<"coachMessages">);
+        sourceDocExists = !!(target &&
+          (target as Doc<"coachMessages">).conversationId === args.conversationId &&
+          (target as Doc<"coachMessages">).userId === userId &&
+          (target as Doc<"coachMessages">).role === "assistant");
       }
 
       if (!sourceDocExists) {

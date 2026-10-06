@@ -60,16 +60,28 @@ Módulos:
 | `src/convex/lib/limits.ts` | cuotas y techos estructurales del coach |
 | `src/pages/Dashboard.tsx` | tab «Coach» (componente `Coach`) |
 
-## 3. Modelo de datos (ver `docs/DATABASE.md` §2)
+## 3. Modelo de datos (ver `docs/DATABASE.md` §2 y §6)
 
 - `coachConversations` — `by_user`, `by_user_status`; `status active|closed`.
 - `coachMessages` — `by_conversation`; contenido acotado en servidor; `intent`
   es un enum cerrado; solo el asistente lleva `questions/observations/confidence`.
 - `aiCoachCalls` — telemetría SIN contenido: requestId, model, promptVersion,
   tokens, duración, `ok`, `error` = código cerrado.
+- `coachClaims` (Incremento 2) — `by_user`, `by_conversation`; `claimText`
+  (1..600), `status verified|rejected` (lo asigna el BACKEND, nunca el LLM),
+  `confidence` 0..1, `promptVersion`.
+- `coachEvidence` (Incremento 2) — `by_claim`; `sourceType`
+  `profile|diagnosis|conversation`, `sourceId` resuelto contra documentos
+  REALES del dueño (fail-closed: lo no verificable no se persiste), `excerpt`
+  (1..400), `confidence`. Relación: claim 1 → N evidence → 1 proposal.
+- `coachProposals` (Incremento 2) — `by_user`, `by_conversation`, `by_claim`;
+  `proposedText` (1..600), `status pending|rejected` (**no existe `accepted`**),
+  `confidence`, `promptVersion`. Máx. 6 por conversación. La propuesta NUNCA
+  escribe en `candidateProfiles` (INV-013/018).
 
 `deleteAccount` (PRIVACY) borra en cascada conversaciones + mensajes +
-telemetría con lecturas acotadas por los techos de `LIMITS`.
+telemetría, y claims → evidence + proposals (más proposals huérfanas por
+`userId`) con lecturas acotadas por los techos de `LIMITS`.
 
 ## 4. Seguridad (mapeo a controles existentes)
 
@@ -99,10 +111,25 @@ telemetría con lecturas acotadas por los techos de `LIMITS`.
 Cuota de esfuerzo de este incremento: ~4 llamadas IA de prueba (usuarios anónimos
 nuevos, no agotan cuotas de usuarios reales).
 
-## 6. Plan de incrementos (pendiente, NO implementado)
+> Nota: la tabla anterior refleja la ejecución del **Incremento 1**. El
+> Incremento 2 (evidence + proposals + UI) amplió los recuentos (p. ej.
+> `api_surface` 53, `coach.security` 33, autorización del coach 9) y añadió
+> `coach.proposalReject.integration` (flujo real de rechazo) y
+> `coachProposalUi` (invariantes INV-UI de la UI); los resultados de cada
+> cierre se reportan en el propio cierre del incremento.
 
-- **Incremento 2 — propuestas:** campo de propuesta en el schema + confirmación
-  humana explícita (ADR-012), Mode B (aplicación manual asistida).
+## 6. Plan de incrementos
+
+- **Incremento 2 — propuestas (IMPLEMENTADO: backend + UI):** cadena estricta
+  `LLM → CLAIM → EVIDENCE (fail-closed en servidor) → PROPOSAL (pending)` con
+  estados `pending|rejected` (sin `accepted`), rechazo del dueño vía la
+  mutation pública `rejectProposalByOwner` (wrapper R3 con las mismas
+  garantías que la interna `rejectProposal`: requireSelf, ownership,
+  pending→rejected, audit) y UI en `Coach()` (`src/pages/Dashboard.tsx`):
+  envío con `sendMessageWithProposals`, lista por `listProposals`, badges
+  «Pendiente de confirmación»/«Rechazada», confirmación en AlertDialog y sin
+  optimistic update. ADR-012; la **aplicación** de la propuesta al perfil
+  (Mode B con confirmación humana) sigue pendiente en un incremento posterior.
 - **Incremento 3 — versionado de perfil:** `candidateProfileVersions` para
   undo/auditoría de cambios aplicados.
 - **Incremento 4 — Mode C/D:** matching e insights de vacante sobre el coach.

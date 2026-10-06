@@ -17,13 +17,22 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/convex/_generated/api";
-import type { Doc } from "@/convex/_generated/dataModel";
+import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { useAuth } from "@/hooks/use-auth";
 import { CvUpload } from "@/components/CvUpload";
 
@@ -468,18 +477,35 @@ function MiCv({ profile }: { profile: Profile }) {
 }
 
 /**
- * Career Coach IA (Incremento 1: SOLO LECTURA).
+ * Career Coach IA (Incremento 1: SOLO LECTURA + Incremento 2: PROPOSALS).
  * Conversación sobre el perfil existente: el coach explica el diagnóstico,
- * pregunta y descubre huecos. No hay edición desde aquí (ni propuestas
- * persistidas): cualquier cambio se hace en «Mi CV» / «Diagnóstico».
+ * pregunta y descubre huecos. No modifica el perfil ni el CV: cualquier
+ * cambio se hace en «Mi CV» / «Diagnóstico».
+ *
+ * Incremento 2: cuando el coach propone una mejora, se registra como
+ * PROPUESTA (estado pendiente) con evidencia validada en el servidor. La UI
+ * la presenta como «Propuesta de mejora» pendiente de confirmación o
+ * rechazada — jamás como aplicada ni verificada (INV-UI-001/009) — y solo el
+ * dueño puede rechazarla (confirmación + mutation pública, sin optimistic
+ * update). Estados soportados: pending | rejected.
  */
 function Coach() {
   const state = useQuery(api.coach.getConversation);
   const startConversation = useMutation(api.coach.startConversation);
-  const sendMessage = useAction(api.coach.sendMessage);
+  const sendMessageWithProposals = useAction(api.coach.sendMessageWithProposals);
+  const rejectProposalByOwner = useMutation(api.coach.rejectProposalByOwner);
+  const proposals = useQuery(
+    api.coach.listProposals,
+    state?.conversation ? { conversationId: state.conversation._id } : "skip",
+  );
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<Id<"coachProposals"> | null>(
+    null,
+  );
+  const [rejecting, setRejecting] = useState<Id<"coachProposals"> | null>(null);
+  const [proposalError, setProposalError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messageCount = state?.messages.length ?? 0;
 
@@ -506,7 +532,7 @@ function Coach() {
     setBusy(true);
     setError(null);
     try {
-      const res = await sendMessage({
+      const res = await sendMessageWithProposals({
         conversationId: state.conversation._id,
         message: text,
       });
@@ -516,6 +542,33 @@ function Coach() {
       setError("No se pudo enviar el mensaje. Reintenta.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * Rechazo confirmado de una propuesta pendiente. SIN optimistic update:
+   * el estado lo decide el servidor (pending → rejected) y la lista reactiva
+   * `listProposals` refresca tras el commit. Si el backend falla, se muestra
+   * el error real y la propuesta permanece «Pendiente de confirmación».
+   */
+  async function confirmReject() {
+    if (!rejectTarget || rejecting !== null) return; // anti doble click
+    setRejecting(rejectTarget);
+    setProposalError(null);
+    try {
+      const res = await rejectProposalByOwner({ proposalId: rejectTarget });
+      if (res.ok) {
+        // Éxito real del servidor: se cierra el diálogo; la query reactiva
+        // vuelve a pintar la lista (ya figura como «Rechazada»).
+        setRejectTarget(null);
+      } else {
+        // Error real (NOT_FOUND/INVALID_STATE): sin falso éxito.
+        setProposalError(res.reason);
+      }
+    } catch {
+      setProposalError("No se pudo rechazar la propuesta. Reintenta.");
+    } finally {
+      setRejecting(null);
     }
   }
 
@@ -530,7 +583,8 @@ function Coach() {
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             Tu coach lee tu perfil y tu diagnóstico para explicártelos,
             preguntarte lo que haga falta y descubrir huecos. No modifica tu
-            perfil ni tu CV: solo conversa.
+            perfil ni tu CV. Si te propone una mejora, la verás como propuesta
+            pendiente de confirmación: nunca se aplica sola.
           </p>
         </div>
         {state && (
@@ -617,6 +671,105 @@ function Coach() {
             <div ref={bottomRef} />
           </div>
 
+          {proposals && proposals.proposals.length > 0 && (
+            <section
+              aria-label="Propuestas de mejora"
+              className="mt-6 rounded-lg border border-border p-4"
+            >
+              <p className="eyebrow">Propuestas de mejora</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                El coach propone mejoras basadas en evidencia de tu perfil
+                validada en el servidor. Son propuestas: nunca se aplican a tu
+                perfil ni a tu CV — tú decides.
+              </p>
+              <ul className="mt-3 space-y-3">
+                {proposals.proposals.map((p) => (
+                  <li
+                    key={p._id}
+                    className="rounded-md border border-border bg-card p-3"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-medium">
+                            Propuesta de mejora
+                          </p>
+                          {p.status === "pending" ? (
+                            <Badge variant="secondary">
+                              Pendiente de confirmación
+                            </Badge>
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className="text-muted-foreground"
+                            >
+                              Rechazada
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6">
+                          {p.proposedText}
+                        </p>
+                      </div>
+                      {p.status === "pending" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setProposalError(null);
+                            setRejectTarget(p._id);
+                          }}
+                          disabled={rejecting !== null}
+                        >
+                          Rechazar
+                        </Button>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              {proposalError && (
+                <p role="alert" className="mt-3 text-sm text-destructive">
+                  {proposalError}
+                </p>
+              )}
+            </section>
+          )}
+
+          <AlertDialog
+            open={rejectTarget !== null}
+            onOpenChange={(open) => {
+              if (!open && rejecting === null) setRejectTarget(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>¿Rechazar esta propuesta?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Se marcará como «Rechazada». No se modifica tu perfil ni tu
+                  CV: solo deja de estar pendiente de confirmación.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              {proposalError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {proposalError}
+                </p>
+              )}
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={rejecting !== null}>
+                  Cancelar
+                </AlertDialogCancel>
+                <Button
+                  variant="destructive"
+                  onClick={() => void confirmReject()}
+                  disabled={rejecting !== null}
+                >
+                  {rejecting !== null ? "Rechazando…" : "Rechazar propuesta"}
+                </Button>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+
           {error && (
             <p role="alert" className="mt-3 text-sm text-destructive">
               {error}
@@ -648,7 +801,7 @@ function Coach() {
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
             Límite diario de mensajes. El coach solo lee tu perfil; no lo
-            modifica.
+            modifica, y cualquier propuesta que haga requiere tu confirmación.
           </p>
         </>
       )}

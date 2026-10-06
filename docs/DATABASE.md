@@ -258,7 +258,10 @@ Una proposal representa una recomendación pendiente derivada de un claim verifi
 
 **grounding:** la evidencia persiste solo tras resolución server-side contra documentos reales; el post-check `verifyCoachResponse` (lib/ai/evidence.ts) es **HEURISTIC_GROUNDING_CHECK** (no «evidencia verificada» semántica), con regla numérica anti-invención.
 
-**eyes on:** no hay `accepted`; la propuesta UI no está implementada todavía.
+**eyes on:** no hay `accepted`; la UI de propuestas (R3) vive en `Coach()` de
+`src/pages/Dashboard.tsx` y rechaza exclusivamente vía la mutation pública
+`rejectProposalByOwner` (wrapper con las mismas garantías que la interna
+`rejectProposal`; esta última sigue siendo internalMutation).
 
 ### auditLog
 | Campo | Tipo |

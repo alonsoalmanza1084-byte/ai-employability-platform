@@ -95,6 +95,9 @@ describe("superficie pública vs interna (auditoría A-01/A-02)", () => {
       ["coach.ts", "getConversation", "query"],
       ["coach.ts", "startConversation", "mutation"],
       ["coach.ts", "sendMessage", "action"],
+      // Contrato de la UI de proposals (R3): rechazo público con ownership.
+      ["coach.ts", "rejectProposalByOwner", "mutation"],
+      ["coach.ts", "listProposals", "query"],
     ];
     for (const [file, fn, kind] of publicEndpoints) {
       expect(exportedFunctionKind(read(file), fn), `${file}.${fn}`).toBe(kind);
@@ -349,13 +352,15 @@ describe("career coach (incremento 1): solo lectura, cuotas y telemetría", () =
     // Internas: createProposalBundle, rejectProposal (invocadas desde action o mutate interno).
     expect(exportedFunctionKind(coach, "createProposalBundle")).toBe("internalMutation");
     expect(exportedFunctionKind(coach, "rejectProposal")).toBe("internalMutation");
+    // Wrapper PÚBLICO del rechazo (R3 Opción A): la interna NO se toca.
+    expect(exportedFunctionKind(coach, "rejectProposalByOwner")).toBe("mutation");
     // Públicas: listProposals, getProposal (queries con requireSelf).
     expect(exportedFunctionKind(coach, "listProposals")).toBe("query");
     expect(exportedFunctionKind(coach, "getProposal")).toBe("query");
     // Acción pública que dispara creación de proposals.
     expect(exportedFunctionKind(coach, "sendMessageWithProposals")).toBe("action");
     // Ninguna acepta userId del cliente.
-    for (const fn of ["sendMessageWithProposals", "listProposals", "getProposal"]) {
+    for (const fn of ["sendMessageWithProposals", "listProposals", "getProposal", "rejectProposalByOwner"]) {
       const start = coach.indexOf(`export const ${fn}`);
       const next = coach.indexOf("export const ", start + 10);
       const scope = next === -1 ? coach.slice(start) : coach.slice(start, next);
@@ -443,6 +448,30 @@ describe("career coach (incremento 1): solo lectura, cuotas y telemetría", () =
     expect(repScope).toMatch(/status: "rejected"/);
     expect(repScope).not.toMatch(/(insert|patch|replace|delete)\(\s*"candidateProfiles"/);
     expect(repScope).toMatch(/coach\.proposal\.reject/);
+  });
+
+  it("INV-UI-004/005/006/002 (wrapper R3): rejectProposalByOwner replica las garantías de la interna", () => {
+    const start = coach.indexOf("export const rejectProposalByOwner");
+    expect(start).toBeGreaterThan(-1);
+    const next = coach.indexOf("export const ", start + 10);
+    const repScope = next === -1 ? coach.slice(start) : coach.slice(start, next);
+    // Pública (el cliente puede invocarla) con identity from session.
+    expect(exportedFunctionKind(coach, "rejectProposalByOwner")).toBe("mutation");
+    expect(repScope).toContain("requireSelf");
+    // INV-UI-005: sin userId desde el cliente.
+    expect(repScope).not.toMatch(/args:\s*\{[^}]*userId/);
+    // Ownership estricto del dueño (las ajenas → NOT_FOUND).
+    expect(repScope).toMatch(/proposal\.userId !== userId/);
+    // INV-UI-004: transición únicamente pending → rejected.
+    expect(repScope).toMatch(/status !== "pending"/);
+    expect(repScope).toMatch(/status: "rejected"/);
+    // Misma acción cerrada de auditoría.
+    expect(repScope).toMatch(/coach\.proposal\.reject/);
+    // INV-UI-006: jamás escribe candidateProfiles; INV-UI-002: sin accepted.
+    expect(repScope).not.toMatch(/(insert|patch|replace|delete)\(\s*"candidateProfiles"/);
+    expect(repScope).not.toMatch(/"accepted"/);
+    // La interna original permanece intacta (aserción INV-022 sin relajar).
+    expect(exportedFunctionKind(coach, "rejectProposal")).toBe("internalMutation");
   });
 
   it("INV-025/026: evidencia verification fail-closed: sourceId debe parecer id Convex y resolverse contra doc real", () => {
@@ -552,11 +581,14 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
       "coach.ts:recordAiFailure": "internalMutation",
       // coach (Career Coach IA — incremento 2: EVIDENCE + PROPOSALS).
       // createProposalBundle es interno (invocado desde sendMessageWithProposals);
-      // rejectProposal, listProposals, getProposal son públicos con ownership.
+      // rejectProposal es interna; la UI rechaza vía el wrapper público
+      // rejectProposalByOwner (R3 Opción A, mismas garantías).
+      // listProposals, getProposal son públicas con ownership.
       // sendMessageWithProposals es la acción pública que dispara proposal creation.
       "coach.ts:sendMessageWithProposals": "action",
       "coach.ts:createProposalBundle": "internalMutation",
       "coach.ts:rejectProposal": "internalMutation",
+      "coach.ts:rejectProposalByOwner": "mutation",
       "coach.ts:listProposals": "query",
       "coach.ts:getProposal": "query",
     };

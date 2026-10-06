@@ -1045,6 +1045,55 @@ export const rejectProposal = internalMutation({
 });
 
 /**
+ * Rechazo PÚBLICO de una proposal por su dueño (wrapper para la UI — R3
+ * Opción A aprobada). Garantías idénticas a la interna `rejectProposal`:
+ *   - identity from session (`requireSelf`): el cliente NUNCA envía userId;
+ *   - ownership estricto `proposal.userId === userId` (las ajenas devuelven
+ *     NOT_FOUND sin filtrar su existencia);
+ *   - transición ÚNICAMENTE pending → rejected;
+ *   - audit con la misma acción cerrada `coach.proposal.reject`;
+ *   - CERO escrituras en `candidateProfiles` (INV-013/018) y sin `accepted`
+ *     (INV-UI-002: solo pending | rejected).
+ * Devuelve resultado estructurado para que la UI muestre el error real sin
+ * falso éxito (INV-UI-008).
+ */
+export const rejectProposalByOwner = mutation({
+  args: {
+    proposalId: v.id("coachProposals"),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireSelf(ctx);
+    const proposal = await ctx.db.get(args.proposalId);
+    if (!proposal || proposal.userId !== userId) {
+      return {
+        ok: false as const,
+        code: "NOT_FOUND",
+        reason: "Sugerencia no encontrada.",
+      };
+    }
+    if (proposal.status !== "pending") {
+      return {
+        ok: false as const,
+        code: "INVALID_STATE",
+        reason: "Solo se pueden rechazar propuestas pendientes.",
+      };
+    }
+    await ctx.db.patch(args.proposalId, {
+      status: "rejected",
+      updatedAt: Date.now(),
+    });
+    await audit(ctx, {
+      actorUserId: userId,
+      action: "coach.proposal.reject",
+      targetType: "coachConversation",
+      targetId: proposal.conversationId,
+      metadata: { proposalId: args.proposalId },
+    });
+    return { ok: true as const };
+  },
+});
+
+/**
  * Lista las propuestas pendientes/rechazadas del actor en la conversación.
  */
 export const listProposals = query({

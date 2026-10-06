@@ -470,6 +470,65 @@ const schema = defineSchema(
       updatedAt: v.number(),
     }).index("by_user", ["userId"]).index("by_conversation", ["conversationId"]).index("by_claim", ["claimId"]),
 
+    // ─── Career Growth (R6) ───────────────────────────────────────────────────
+    careerGoals: defineTable({
+      userId: v.id("users"),
+      kind: v.union(
+        v.literal("target_role"),
+        v.literal("aspiration"),
+        v.literal("goal"),
+      ),
+      value: v.string(),
+      skills: v.array(
+        v.object({
+          name: v.string(),
+          requiredLevel: v.number(),
+          category: v.optional(v.string()),
+        }),
+      ),
+      source: v.union(
+        v.literal("user-provided"),
+        v.literal("system-derived"),
+        v.literal("ai-generated"),
+        v.literal("proposed"),
+        v.literal("verified"),
+      ),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_kind", ["userId", "kind"]),
+
+    gapAnalyses: defineTable({
+      userId: v.id("users"),
+      targetId: v.id("careerGoals"),
+      analysis: v.object({
+        targetId: v.id("careerGoals"),
+        engineVersion: v.string(),
+        generatedAt: v.number(),
+        overallCoverage: v.number(),
+        skills: v.array(
+          v.object({
+            skill: v.string(),
+            requiredLevel: v.number(),
+            currentLevel: v.optional(v.number()),
+            status: v.union(
+              v.literal("meets_requirement"),
+              v.literal("gap"),
+              v.literal("missing_evidence"),
+              v.literal("insufficient_evidence"),
+            ),
+            evidenceRefs: v.array(v.string()),
+            explanation: v.string(),
+          }),
+        ),
+      }),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_target_user", ["targetId", "userId"])
+      .index("by_user", ["userId"]),
+
   },
   // Validación de schema ACTIVADA (auditoría #2): Convex valida en runtime
   // que todo documento nuevo o modificado coincide con este schema.

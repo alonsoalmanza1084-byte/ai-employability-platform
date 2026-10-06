@@ -13,7 +13,7 @@ export async function requireUser(ctx: any): Promise<Doc<"users"> & { _id: Id<"u
 
 /** Escribe en auditLog. Metadata mínima: nunca contenido de documentos ni emails completos. */
 export async function audit(
-  ctx: { db: any },
+  ctx: any,
   entry: {
     actorUserId?: Id<"users"> | null;
     organizationId?: Id<"organizations"> | null;
@@ -35,7 +35,7 @@ export async function audit(
 
 /** securityEvents: denegaciones, límites, uploads rechazados. */
 export async function securityEvent(
-  ctx: { db: any },
+  ctx: any,
   event: { kind: string; userId?: Id<"users"> | null; detail: string },
 ) {
   await ctx.db.insert("securityEvents", {
@@ -50,7 +50,7 @@ export async function securityEvent(
  * Si la clave ya existe, no vuelve a insertar (evita doble conteo/cobro futuro).
  */
 export async function recordUsage(
-  ctx: { db: any },
+  ctx: any,
   event: {
     userId?: Id<"users"> | null;
     organizationId?: Id<"organizations"> | null;
@@ -91,7 +91,7 @@ export async function recordUsage(
 export const COUNT_USAGE_MAX = 1000;
 
 export async function countUsage(
-  ctx: { db: any },
+  ctx: any,
   opts: {
     userId?: Id<"users"> | null;
     organizationId?: Id<"organizations"> | null;

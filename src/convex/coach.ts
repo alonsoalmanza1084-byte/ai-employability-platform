@@ -5,7 +5,7 @@
  * diagnóstico EXISTENTES; NO escribe en candidateProfiles (no existe ninguna
  * ruta desde aquí); NO discute salarios ni atributos protegidos (prompt V1).
  *
- * Incremento 2 (evidence + proposals, ADR-014): el LLM puede proponer claims/
+ * Incremento 2 (evidence + proposals, ADR-012): el LLM puede proponer claims/
  * evidencia/propuestas REVISABLES sobre el perfil, pero NUNCA las aplica al
  * perfil. El flujo es: LLM → CLAIM → EVIDENCE (verificado servidor) →
  * PROPOSAL (pendiente, rechazable por el dueño). La confirmación/aceptación

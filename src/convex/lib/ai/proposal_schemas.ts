@@ -1,6 +1,6 @@
 /**
  * Esquema estricto de la salida del Coach para claims/evidence/proposals
- * (Incremento 2; ADR-014). Espejo de `coach_schemas.ts` (solo lectura) pero
+ * (Incremento 2; ADR-012). Espejo de `coach_schemas.ts` (solo lectura) pero
  * con la estructura nueva. Nada de esto llega a la BD sin pasar por aquí y por
  * la validación interna de ownership/estado.
  *

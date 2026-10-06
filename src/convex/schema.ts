@@ -434,7 +434,7 @@ const schema = defineSchema(
     // ─── Career Coach IA: propuestas y evidencia (incremento 2) ───────────
     // Cada proposal deriva de un claim verificado contra evidencia REAL (perfil/
     // diagnóstico/conversación) y es revisable por su dueño. Incremento 2 NO
-    // modifica candidateProfiles (ADR-014); la aplicación de una proposal
+    // modifica candidateProfiles (ADR-012); la aplicación de una proposal
     // aceptada queda para un incremento posterior.
     coachClaims: defineTable({
       userId: v.id("users"),

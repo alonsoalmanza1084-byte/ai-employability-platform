@@ -1,0 +1,21 @@
+
+/home/daytona/codebase/src/convex/career.ts
+   22:10  error  'computeDiagnosis' is defined but never used        @typescript-eslint/no-unused-vars
+   22:33  error  'ProfileData' is defined but never used             @typescript-eslint/no-unused-vars
+   26:3   error  'GAP_ENGINE_VERSION' is defined but never used      @typescript-eslint/no-unused-vars
+   32:3   error  'skillValidator' is defined but never used          @typescript-eslint/no-unused-vars
+   33:3   error  'experienceValidator' is defined but never used     @typescript-eslint/no-unused-vars
+   34:3   error  'educationValidator' is defined but never used      @typescript-eslint/no-unused-vars
+   35:3   error  'certificationValidator' is defined but never used  @typescript-eslint/no-unused-vars
+  323:31  error  Unexpected any. Specify a different type            @typescript-eslint/no-explicit-any
+  339:29  error  Unexpected any. Specify a different type            @typescript-eslint/no-explicit-any
+  361:8   error  Unexpected any. Specify a different type            @typescript-eslint/no-explicit-any
+  394:28  error  Unexpected any. Specify a different type            @typescript-eslint/no-explicit-any
+  403:26  error  Unexpected any. Specify a different type            @typescript-eslint/no-explicit-any
+  419:31  error  Unexpected any. Specify a different type            @typescript-eslint/no-explicit-any
+  420:39  error  Unexpected any. Specify a different type            @typescript-eslint/no-explicit-any
+  421:37  error  Unexpected any. Specify a different type            @typescript-eslint/no-explicit-any
+  422:47  error  Unexpected any. Specify a different type            @typescript-eslint/no-explicit-any
+
+✖ 16 problems (16 errors, 0 warnings)
+

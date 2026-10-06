@@ -1,0 +1,95 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90m/home/daytona/codebase[39m
+
+ [32m✓[39m tests/integration/vuln14.denial.audit.integration.test.ts [2m([22m[2m25 tests[22m[2m)[22m[33m 75843[2mms[22m[39m
+   [32m✓[39m VULN-14 — auditoría de denegaciones de autorización [2m(25)[22m
+     [33m[2m✓[22m[39m anonymous → orgAuditTrail: DENY + evento `unauthenticated`[33m 4397[2mms[22m[39m
+     [33m[2m✓[22m[39m anonymous → orgInvite: DENY + evento, y NO crea invitación[33m 3094[2mms[22m[39m
+     [33m[2m✓[22m[39m outsider → orgMembers: DENY + evento `not_a_member` con tenant no verificado[33m 5271[2mms[22m[39m
+     [33m[2m✓[22m[39m outsider → orgInvite (escalada vertical): DENY + evento, sin invitación creada[33m 3029[2mms[22m[39m
+     [33m[2m✓[22m[39m outsider → orgRemoveMember: DENY + evento, la membresía sigue intacta[33m 3001[2mms[22m[39m
+     [33m[2m✓[22m[39m candidate → orgMembers: DENY + evento (sin lectura hacia el lado empresa)[33m 2923[2mms[22m[39m
+     [33m[2m✓[22m[39m candidate → orgAuditTrail: DENY + evento[33m 2751[2mms[22m[39m
+     [33m[2m✓[22m[39m recruiter → orgAuditTrail: DENY + evento `insufficient_role`[33m 4058[2mms[22m[39m
+     [33m[2m✓[22m[39m recruiter → orgInvite: DENY + evento (escalada de rol)[33m 3134[2mms[22m[39m
+     [33m[2m✓[22m[39m hiring_manager → orgAuditTrail: DENY + evento[33m 2828[2mms[22m[39m
+     [33m[2m✓[22m[39m hiring_manager → orgRemoveMember: DENY + evento, la membresía sigue intacta[33m 2952[2mms[22m[39m
+     [33m[2m✓[22m[39m outsider → applicationsListByJob (cross-tenant read): DENY + evento[33m 3351[2mms[22m[39m
+     [33m[2m✓[22m[39m outsider → applicationsAddNote (cross-tenant write): DENY + evento, sin nota creada[33m 3054[2mms[22m[39m
+     [33m[2m✓[22m[39m outsider → matchesGetForApplication (IDOR): DENY + evento[33m 2857[2mms[22m[39m
+     [33m[2m✓[22m[39m ID de organización con FORMATO INVÁLIDO: Convex lo rechaza antes del handler (gap documentado), sin fuga de datos[33m 2709[2mms[22m[39m
+     [33m[2m✓[22m[39m vacante inexistente: DENY y sin fuga de datos (misma limitación de checksum que el caso anterior)[33m 2614[2mms[22m[39m
+     [33m[2m✓[22m[39m el cliente NO puede inyectar campos del evento por los argumentos[33m 5306[2mms[22m[39m
+     [33m[2m✓[22m[39m replay: 3 denegaciones idénticas producen 3 eventos distintos[33m 4010[2mms[22m[39m
+     [33m[2m✓[22m[39m peticiones concurrentes: las 5 se deniegan y las 5 se registran[33m 3328[2mms[22m[39m
+     [33m[2m✓[22m[39m miembro legitimate ALLOW: la operación funciona y NO genera evento de denegación[33m 2735[2mms[22m[39m
+     [33m[2m✓[22m[39m miembro revocado: por el wrapper auditado queda DENY + evento, y recupera el acceso[33m 8168[2mms[22m[39m
+[90mstdout[2m | tests/integration/rbac.matrix.integration.test.ts[2m > [22m[2mBLOQUE D — matriz RBAC end-to-end (sesiones reales)[2m > [22m[2mMATRIZ: resumen de permisos por rol (evidencia de la sesión)
+[22m[39mRBAC_MATRIX {"org_admin":{"ver_org":"ALLOW","ver_miembros":"ALLOW","ver_vacantes":"ALLOW","crear_vacante":"ALLOW","subir_cv":"ALLOW","ver_applicants":"ALLOW","anotar":"ALLOW","decidir":"ALLOW","audit_log":"ALLOW","invitar":"ALLOW"},"recruiter":{"ver_org":"ALLOW","ver_miembros":"ALLOW","ver_vacantes":"ALLOW","crear_vacante":"ALLOW","subir_cv":"ALLOW","ver_applicants":"ALLOW","anotar":"ALLOW","decidir":"ALLOW","audit_log":"DENY","invitar":"DENY"},"hiring_manager":{"ver_org":"ALLOW","ver_miembros":"ALLOW","ver_vacantes":"ALLOW","crear_vacante":"DENY","subir_cv":"DENY","ver_applicants":"ALLOW","anotar":"ALLOW","decidir":"DENY","audit_log":"DENY","invitar":"DENY"},"candidate":{"ver_org":"DENY","ver_miembros":"DENY","ver_vacantes":"DENY","crear_vacante":"DENY","subir_cv":"DENY","ver_applicants":"DENY","anotar":"DENY","decidir":"DENY","audit_log":"DENY","invitar":"DENY"},"outsider":{"ver_org":"DENY","ver_miembros":"DENY","ver_vacantes":"DENY","crear_vacante":"DENY","subir_cv":"DENY","ver_applicants":"DENY","anotar":"DENY","decidir":"DENY","audit_log":"DENY","invitar":"DENY"}}
+
+[90mstdout[2m | tests/integration/rbac.matrix.integration.test.ts[2m > [22m[2mBLOQUE D — matriz RBAC end-to-end (sesiones reales)[2m > [22m[2mMATRIZ: resumen de permisos por rol (evidencia de la sesión)
+[22m[39mRBAC_ANONYMOUS {"ver_vacante":"DENY","ver_miembros":"DENY","ver_vacantes":"DENY","crear_vacante":"DENY","cerrar_vacante":"DENY","subir_cv":"DENY","ver_applicants":"DENY","ver_match":"DENY","anotar":"DENY","decidir":"DENY","audit_log":"DENY","invitar":"DENY","quitar_miembro":"DENY","cv_propio":"DENY","mis_resumes":"DENY"}
+
+ [32m✓[39m tests/integration/rbac.matrix.integration.test.ts [2m([22m[2m18 tests[22m[2m)[22m[33m 27945[2mms[22m[39m
+   [32m✓[39m BLOQUE D — matriz RBAC end-to-end (sesiones reales) [2m(18)[22m
+     [33m[2m✓[22m[39m ver org: los 3 roles de la org ven SU organización; candidate/outsider no[33m 1392[2mms[22m[39m
+     [33m[2m✓[22m[39m ver miembros: los 3 roles de la org sí (política hiring_manager+); fuera, no[33m 596[2mms[22m[39m
+     [33m[2m✓[22m[39m crear vacante: org_admin y recruiter sí; hiring_manager/candidate/outsider no[33m 790[2mms[22m[39m
+     [33m[2m✓[22m[39m cerrar vacante: solo org_admin[33m 1154[2mms[22m[39m
+     [33m[2m✓[22m[39m ver vacantes: los 3 roles de la org sí; los demás no[33m 632[2mms[22m[39m
+     [33m[2m✓[22m[39m subir CV a la vacante: org_admin y recruiter sí; hiring_manager no[33m 1892[2mms[22m[39m
+     [33m[2m✓[22m[39m ver applicants: los 3 roles de la org sí; candidate/outsider no[33m 816[2mms[22m[39m
+     [33m[2m✓[22m[39m añadir nota: los 3 roles de la org sí; candidate/outsider no[33m 686[2mms[22m[39m
+     [33m[2m✓[22m[39m decidir (shortlist): org_admin y recruiter sí; hiring_manager NO (decisión es humana y de niveles superiores)[33m 638[2mms[22m[39m
+     [33m[2m✓[22m[39m rechazar: también exige nota y solo recruiter/org_admin[33m 647[2mms[22m[39m
+     [33m[2m✓[22m[39m audit log: solo org_admin[33m 512[2mms[22m[39m
+     [33m[2m✓[22m[39m invitar miembro: solo org_admin[33m 541[2mms[22m[39m
+     [33m[2m✓[22m[39m listar invitaciones: solo org_admin[33m 421[2mms[22m[39m
+     [33m[2m✓[22m[39m quitar miembro: solo org_admin puede intentarlo, y nunca a sí mismo[33m 638[2mms[22m[39m
+     [33m[2m✓[22m[39m MATRIZ: resumen de permisos por rol (evidencia de la sesión)[33m 8935[2mms[22m[39m
+     [33m[2m✓[22m[39m REVOCACIÓN: removeMember deja sin acceso a la MISMA sesión, sin cerrar sesión[33m 1590[2mms[22m[39m
+[90mstdout[2m | tests/integration/cv_ingest.integration.test.ts[2m > [22m[2mpipeline de ingesta de CV (deployment real)[2m > [22m[2mingestCv con un PDF real YA NO falla con structuredClone/transfer (regresión del incidente)
+[22m[39m[CONVEX A(candidates:ingestCv)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+
+ [32m✓[39m tests/integration/cv_ingest.integration.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 14294[2mms[22m[39m
+   [32m✓[39m pipeline de ingesta de CV (deployment real) [2m(2)[22m
+     [33m[2m✓[22m[39m ingestCv con un PDF real YA NO falla con structuredClone/transfer (regresión del incidente)[33m 13985[2mms[22m[39m
+ [32m✓[39m tests/integration/gates.integration.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 9627[2mms[22m[39m
+   [32m✓[39m GATES H/I/J/K — audit log, abuso de API, ficheros y auth (deployment real) [2m(17)[22m
+     [32m✓[39m GATE H — audit log [2m(5)[22m
+       [33m[2m✓[22m[39m orden descendente estricto y sin solapamientos entre páginas[33m 708[2mms[22m[39m
+     [32m✓[39m GATE I — abuso de API [2m(5)[22m
+       [33m[2m✓[22m[39m ids malformados en todas las funciones que aceptan ids[33m 757[2mms[22m[39m
+       [33m[2m✓[22m[39m replay: repetir una decisión no cambia el resultado ni evade el límite[33m 1011[2mms[22m[39m
+       [33m[2m✓[22m[39m rechazar sin nota se rechaza (no evasión del control)[33m 675[2mms[22m[39m
+     [32m✓[39m GATE J — ficheros [2m(3)[22m
+       [33m[2m✓[22m[39m un ejecutable renombrado a .pdf es aceptado en init pero FALLA en la ingesta[33m 1195[2mms[22m[39m
+       [33m[2m✓[22m[39m extensiones no permitidas se rechazan en init Y en finalize[33m 751[2mms[22m[39m
+       [33m[2m✓[22m[39m un nombre de fichero con path traversal se neutraliza al guardarlo[33m 777[2mms[22m[39m
+     [32m✓[39m GATE K — auth y revocación [2m(3)[22m
+       [33m[2m✓[22m[39m sin sesión, todas las funciones protegidas se deniegan[33m 563[2mms[22m[39m
+       [33m[2m✓[22m[39m un token de sesión ajeno no sirve (no hay token reutilizable entre sesiones)[33m 518[2mms[22m[39m
+       [33m[2m✓[22m[39m cerrar sesión: tras limpiar el token, el acceso se pierde[33m 444[2mms[22m[39m
+     [32m✓[39m GATE F — multi-tenancy [2m(1)[22m
+       [33m[2m✓[22m[39m todos los recursos de la org son invisibles y mutables solo por miembros[33m 531[2mms[22m[39m
+[90mstdout[2m | tests/integration/fixtures.seed.integration.test.ts[2m > [22m[2mSIEMBRA — dataset sintético para backup/restore[2m > [22m[2mcrea TENANT_A y TENANT_B con grafo completo y escribe el manifiesto
+[22m[39mSEED_MANIFEST /tmp/tf/manifest.json {"orgA":"m97f65ee44apz9x82zmtkhq6gs8fsree","orgB":"m977ytx1pxpd53j6q37bqke0818fs7gs","applicationA":"k57dvrm4d0kvsjqfmc0cv3vya58frj79","auditA":6}
+
+ [32m✓[39m tests/integration/fixtures.seed.integration.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 4123[2mms[22m[39m
+   [32m✓[39m SIEMBRA — dataset sintético para backup/restore [2m(1)[22m
+     [33m[2m✓[22m[39m crea TENANT_A y TENANT_B con grafo completo y escribe el manifiesto[33m 4120[2mms[22m[39m
+[90mstdout[2m | tests/integration/rbac.seed.integration.test.ts[2m > [22m[2mRBAC E2E (fase 1) — siembra de identidades[2m > [22m[2mcrea org_admin, recruiter, hiring_manager, candidate y outsider
+[22m[39mRBAC_SEED {"orgId":"m9702gw2y8esk005vdff7rarbs8fswn8","jobId":"kx78vdrsktz3cwgdqq4d26sxnh8fr0ed","users":{"org_admin":"jx7725bt0n7sryz36d1bvk65nd8fsvdp","recruiter":"jx79wzhvb916yydv1x6yvw5kw58fs570","hiring_manager":"jx74cbpz7rqprwj2d2cnwbmhfs8fsbdq","candidate":"jx776z27c03jh85spcffn4y08d8fsc2s","outsider":"jx78s7x828ykjadyzc66q5qq4h8fs5ge"}}
+
+ [32m✓[39m tests/integration/rbac.seed.integration.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 4230[2mms[22m[39m
+   [32m✓[39m RBAC E2E (fase 1) — siembra de identidades [2m(1)[22m
+     [33m[2m✓[22m[39m crea org_admin, recruiter, hiring_manager, candidate y outsider[33m 4228[2mms[22m[39m
+ [32m✓[39m tests/integration/securityEvents.denial.integration.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 1259[2mms[22m[39m
+   [32m✓[39m P0/VULN-12 — la denegación deja security event [2m(6)[22m
+     [33m[2m✓[22m[39m extensión no permitida → ok:false y SIN uploadUrl (no hay autorización implícita)[33m 361[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m7 passed[39m[22m[90m (7)[39m
+[2m      Tests [22m [1m[32m70 passed[39m[22m[90m (70)[39m
+[2m   Start at [22m 19:52:02
+[2m   Duration [22m 138.81s[2m (tests 99%)[22m
+

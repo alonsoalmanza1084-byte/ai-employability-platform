@@ -591,6 +591,14 @@ describe("auditoría #2: inventario exhaustivo de funciones públicas", () => {
       "coach.ts:rejectProposalByOwner": "mutation",
       "coach.ts:listProposals": "query",
       "coach.ts:getProposal": "query",
+      // career (R6, ADR-014): inteligencia profesional propia (requireSelf, PRIVATE).
+      "career.ts:myCareerGoals": "query",
+      "career.ts:myGapAnalysis": "query",
+      "career.ts:matchGoal": "query",
+      "career.ts:compatibleRoles": "query",
+      "career.ts:setCareerGoal": "mutation",
+      "career.ts:removeCareerGoal": "mutation",
+      "career.ts:regenerateGapAnalysis": "mutation",
     };
 
     // 1) Todo lo exportado en el código real está en el inventario con la

@@ -1,0 +1,94 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90m/home/daytona/codebase[39m
+
+[90mstdout[2m | tests/integration/coach.authorization.integration.test.ts[2m > [22m[2mcareer coach — autorización y fail-closed (BD real)[2m > [22m[2mread-only real: el envío NUNCA modifica candidateProfiles (cualquier camino)
+[22m[39m[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+
+[90mstdout[2m | tests/integration/coach.authorization.integration.test.ts[2m > [22m[2mcareer coach — autorización y fail-closed (BD real)[2m > [22m[2mINV-008: la cuota es atómica bajo concurrencia (7 envíos → ≥1 denegado por hora)
+[22m[39m[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+
+[90mstdout[2m | tests/integration/coach.authorization.integration.test.ts[2m > [22m[2mcareer coach — autorización y fail-closed (BD real)[2m > [22m[2mINV-008: la cuota es atómica bajo concurrencia (7 envíos → ≥1 denegado por hora)
+[22m[39m[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+
+[90mstdout[2m | tests/integration/coach.authorization.integration.test.ts[2m > [22m[2mcareer coach — autorización y fail-closed (BD real)[2m > [22m[2mINV-008: la cuota es atómica bajo concurrencia (7 envíos → ≥1 denegado por hora)
+[22m[39m[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+
+[90mstdout[2m | tests/integration/coach.authorization.integration.test.ts[2m > [22m[2mcareer coach — autorización y fail-closed (BD real)[2m > [22m[2mINV-008: la cuota es atómica bajo concurrencia (7 envíos → ≥1 denegado por hora)
+[22m[39m[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+
+[90mstdout[2m | tests/integration/coach.authorization.integration.test.ts[2m > [22m[2mcareer coach — autorización y fail-closed (BD real)[2m > [22m[2mINV-008: la cuota es atómica bajo concurrencia (7 envíos → ≥1 denegado por hora)
+[22m[39m[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+
+[90mstdout[2m | tests/integration/coach.authorization.integration.test.ts[2m > [22m[2mcareer coach — autorización y fail-closed (BD real)[2m > [22m[2mINV-008: la cuota es atómica bajo concurrencia (7 envíos → ≥1 denegado por hora)
+[22m[39m[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+
+[90mstdout[2m | tests/integration/coach.authorization.integration.test.ts[2m > [22m[2mcareer coach — autorización y fail-closed (BD real)[2m > [22m[2mINV-011: inyección en vivo no obtiene secretos/prompt y no escribe estado
+[22m[39m[CONVEX A(coach:sendMessage)] [WARN] 'AI SDK Warning: System messages in the prompt or messages fields can be a security risk because they may enable prompt injection attacks. Use the system option instead when possible. Set allowSystemInMessages to true to suppress this warning, or false to throw an error.'
+
+ [32m✓[39m tests/integration/coach.authorization.integration.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 77373[2mms[22m[39m
+   [32m✓[39m career coach — autorización y fail-closed (BD real) [2m(9)[22m
+     [33m[2m✓[22m[39m aislamiento A→B: B no ve ni puede escribir en la conversación de A[33m 1796[2mms[22m[39m
+     [33m[2m✓[22m[39m sin perfil el gate falla ANTES de la IA (NO_PROFILE, sin mensajes)[33m 658[2mms[22m[39m
+     [33m[2m✓[22m[39m validación de entrada: mensaje vacío denegado sin escribir nada[33m 662[2mms[22m[39m
+     [33m[2m✓[22m[39m read-only real: el envío NUNCA modifica candidateProfiles (cualquier camino)[33m 23719[2mms[22m[39m
+     [33m[2m✓[22m[39m INV-007: sin sesión válida el coach es totalmente inaccesible[33m 1221[2mms[22m[39m
+     [33m[2m✓[22m[39m IDs malformados: Convex los rechaza antes del handler (sin alcanzar la BD)[33m 699[2mms[22m[39m
+     [33m[2m✓[22m[39m INV-008: la cuota es atómica bajo concurrencia (7 envíos → ≥1 denegado por hora)[33m 29702[2mms[22m[39m
+     [33m[2m✓[22m[39m INV-011: inyección en vivo no obtiene secretos/prompt y no escribe estado[33m 6679[2mms[22m[39m
+     [33m[2m✓[22m[39m INV-006: deleteAccount elimina conversaciones, mensajes y telemetría del coach[33m 12227[2mms[22m[39m
+[90mstdout[2m | tests/integration/accountDeletion.integration.test.ts[2m > [22m[2mP2 — borrado real de datos al eliminar la cuenta[2m > [22m[2mborra perfil, CVs, binario, membresías y authAccounts; mata la sesión; no resucita por OTP; y no toca a otros usuarios
+[22m[39mDELETION_TOKEN_PROBE jx791atnpq84s75kemg7pxnt4h8frhdq
+
+ [32m✓[39m tests/integration/accountDeletion.integration.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 42679[2mms[22m[39m
+   [32m✓[39m P2 — borrado real de datos al eliminar la cuenta [2m(1)[22m
+     [33m[2m✓[22m[39m borra perfil, CVs, binario, membresías y authAccounts; mata la sesión; no resucita por OTP; y no toca a otros usuarios[33m 42676[2mms[22m[39m
+ [32m✓[39m tests/integration/coach.proposalReject.integration.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 30180[2mms[22m[39m
+   [32m✓[39m career coach — rechazo de proposals (BD real, flujo UI→mutación→audit) [2m(3)[22m
+     [33m[2m✓[22m[39m flujo del dueño: pending → rejected, audit, refresh y perfil intacto (INV-UI-006)[33m 12336[2mms[22m[39m
+     [33m[2m✓[22m[39m ownership (INV-UI-007): B no rechaza ni ve proposals de A[33m 9877[2mms[22m[39m
+     [33m[2m✓[22m[39m sin sesión la mutation pública es inaccesible (UNAUTHENTICATED) y los ids malformados no alcanzan el handler[33m 7963[2mms[22m[39m
+ [32m✓[39m tests/integration/security.integration.test.ts [2m([22m[2m31 tests[22m[2m)[22m[33m 16885[2mms[22m[39m
+   [32m✓[39m integración de seguridad (deployment real) [2m(31)[22m
+     [32m✓[39m inputs excesivamente grandes [2m(2)[22m
+       [33m[2m✓[22m[39m jobs.create rechaza título gigante y demasiados requisitos[33m 319[2mms[22m[39m
+     [32m✓[39m matriz RBAC con organizaciones reales (auditoría #2) [2m(8)[22m
+       [33m[2m✓[22m[39m outsider no ve ninguna lectura de la org (jobs/members/applications/notes/match)[33m 1328[2mms[22m[39m
+     [32m✓[39m revocación de membresía y audit trail (auditoría #3) [2m(4)[22m
+       [33m[2m✓[22m[39m un usuario sin fila de membresía no accede a NADA de la org (invariante de revocación)[33m 1526[2mms[22m[39m
+       [33m[2m✓[22m[39m removeMember: NO se puede auto-eliminar ni remover a un no-miembro[33m 955[2mms[22m[39m
+       [33m[2m✓[22m[39m auditTrail: el org_admin SÍ lee su trail; un outsider de otra org NO[33m 1376[2mms[22m[39m
+       [33m[2m✓[22m[39m invitaciones vivas: outsider no lista, no revoca y el token tras revocar no sirve[33m 1575[2mms[22m[39m
+     [32m✓[39m IDOR exhaustivo por tabla (auditoría #2) [2m(3)[22m
+       [33m[2m✓[22m[39m candidates.ingestCv de otro usuario → NOT_FOUND (acción, no mutation)[33m 1190[2mms[22m[39m
+     [32m✓[39m cuenta: deleteAccount (auditoría #2) [2m(1)[22m
+       [33m[2m✓[22m[39m deleteAccount completa OK, revoca la sesión (myProfile → null/throw) y es idempotente-fail-closed[33m 1242[2mms[22m[39m
+ [32m✓[39m tests/integration/gates.integration.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 9746[2mms[22m[39m
+   [32m✓[39m GATES H/I/J/K — audit log, abuso de API, ficheros y auth (deployment real) [2m(17)[22m
+     [32m✓[39m GATE H — audit log [2m(5)[22m
+       [33m[2m✓[22m[39m orden descendente estricto y sin solapamientos entre páginas[33m 663[2mms[22m[39m
+     [32m✓[39m GATE I — abuso de API [2m(5)[22m
+       [33m[2m✓[22m[39m ids malformados en todas las funciones que aceptan ids[33m 644[2mms[22m[39m
+       [33m[2m✓[22m[39m replay: repetir una decisión no cambia el resultado ni evade el límite[33m 1083[2mms[22m[39m
+       [33m[2m✓[22m[39m rechazar sin nota se rechaza (no evasión del control)[33m 690[2mms[22m[39m
+     [32m✓[39m GATE J — ficheros [2m(3)[22m
+       [33m[2m✓[22m[39m un ejecutable renombrado a .pdf es aceptado en init pero FALLA en la ingesta[33m 985[2mms[22m[39m
+       [33m[2m✓[22m[39m extensiones no permitidas se rechazan en init Y en finalize[33m 720[2mms[22m[39m
+       [33m[2m✓[22m[39m un nombre de fichero con path traversal se neutraliza al guardarlo[33m 686[2mms[22m[39m
+     [32m✓[39m GATE K — auth y revocación [2m(3)[22m
+       [33m[2m✓[22m[39m sin sesión, todas las funciones protegidas se deniegan[33m 547[2mms[22m[39m
+       [33m[2m✓[22m[39m un token de sesión ajeno no sirve (no hay token reutilizable entre sesiones)[33m 815[2mms[22m[39m
+       [33m[2m✓[22m[39m cerrar sesión: tras limpiar el token, el acceso se pierde[33m 459[2mms[22m[39m
+     [32m✓[39m GATE F — multi-tenancy [2m(1)[22m
+       [33m[2m✓[22m[39m todos los recursos de la org son invisibles y mutables solo por miembros[33m 554[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m5 passed[39m[22m[90m (5)[39m
+[2m      Tests [22m [1m[32m61 passed[39m[22m[90m (61)[39m
+[2m   Start at [22m 20:08:59
+[2m   Duration [22m 177.96s[2m (tests 100%)[22m
+

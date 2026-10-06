@@ -126,6 +126,21 @@ export const deleteAccount = mutation({
       .take(COACH_PROPOSALS_READ_MAX);
     for (const p of orphanProps) await ctx.db.delete(p._id);
 
+    // 2-ter. Career Profile / goals (R6, ADR-014): eliminar los objetivos
+    // profesionales propios y sus análisis de brecha en cascada.
+    const careerGoals = await ctx.db
+      .query("careerGoals")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .take(100);
+    for (const g of careerGoals) {
+      const analyses = await ctx.db
+        .query("gapAnalyses")
+        .withIndex("by_target_user", (q) => q.eq("targetId", g._id))
+        .take(100);
+      for (const a of analyses) await ctx.db.delete(a._id);
+      await ctx.db.delete(g._id);
+    }
+
     // 3) Membresías: revocación de acceso (no son datos personales del
     //    usuario sino vínculos; sin ellas requireMembership niega todo).
     const memberships = await ctx.db

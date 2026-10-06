@@ -1,0 +1,8 @@
+▌ Developing against deployment:
+▌ [Development] freebuff:250221d0-069f-4489-824e-cffd8095010d:dev/vly-dev-service-account (dev) (dashboard: https://dashboard.convex.dev/t/freebuff/250221d0-069f-4489-824e-cffd8095010d/hip-porpoise-838)
+▌ └─ https://hip-porpoise-838.convex.cloud
+- Preparing Convex functions...
+
+[36mA minor update is available for Convex[39m [2m(1.42.1 → 1.46.0)[22m
+[2mChangelog:[22m [4mhttps://github.com/get-convex/convex-js/blob/main/CHANGELOG.md#changelog[24m
+[32m✔[39m 20:02:37 Convex functions ready! (9.79s)

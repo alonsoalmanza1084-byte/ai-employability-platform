@@ -18,6 +18,10 @@ export const LIMITS = {
   // techo de lectura en applyExtraction — auditoría #2).
   maxRequirementsPerJob: 20,
 
+  // ─── Career Profile / Goal (R6, ADR-014) ───────────────────────────────
+  maxCareerGoalsPerUser: 10,
+  maxCareerGoalSkills: 12,
+
   // ─── Career Coach IA (Incremento 1: solo lectura) ──────────────────────
   // Cuotas CONSERVADORAS y fail-closed (decisión de producto): todo chequeo
   // ocurre en una mutación transaccional ANTES de llamar a la IA, y el uso se

@@ -1,0 +1,49 @@
+▌ Developing against deployment:
+▌ [Development] freebuff:250221d0-069f-4489-824e-cffd8095010d:dev/vly-dev-service-account (dev) (dashboard: https://dashboard.convex.dev/t/freebuff/250221d0-069f-4489-824e-cffd8095010d/hip-porpoise-838)
+▌ └─ https://hip-porpoise-838.convex.cloud
+- Preparing Convex functions...
+
+[36mA minor update is available for Convex[39m [2m(1.42.1 → 1.46.0)[22m
+[2mChangelog:[22m [4mhttps://github.com/get-convex/convex-js/blob/main/CHANGELOG.md#changelog[24m
+✘ [ERROR] Detected cycle while resolving import "ROLE_REQUIREMENTS_VERSION"
+
+    src/convex/lib/roles.ts:7:9:
+      7 │ export { ROLE_REQUIREMENTS_VERSION, ROLE_TEMPLATES, roleTemplateByI...
+        ╵          ~~~~~~~~~~~~~~~~~~~~~~~~~
+
+✘ [ERROR] Detected cycle while resolving import "ROLE_TEMPLATES"
+
+    src/convex/lib/roles.ts:7:36:
+      7 │ ...LE_REQUIREMENTS_VERSION, ROLE_TEMPLATES, roleTemplateById, findR...
+        ╵                             ~~~~~~~~~~~~~~
+
+✘ [ERROR] Detected cycle while resolving import "roleTemplateById"
+
+    src/convex/lib/roles.ts:7:52:
+      7 │ ...ERSION, ROLE_TEMPLATES, roleTemplateById, findRoleTemplateByLabe...
+        ╵                            ~~~~~~~~~~~~~~~~
+
+✘ [ERROR] Detected cycle while resolving import "findRoleTemplateByLabel"
+
+    src/convex/lib/roles.ts:7:70:
+      7 │ ...S, roleTemplateById, findRoleTemplateByLabel, roleSkillsAsRequir...
+        ╵                         ~~~~~~~~~~~~~~~~~~~~~~~
+
+✘ [ERROR] Detected cycle while resolving import "roleSkillsAsRequired"
+
+    src/convex/lib/roles.ts:7:95:
+      7 │ ...dRoleTemplateByLabel, roleSkillsAsRequired, type RoleRequirement...
+        ╵                          ~~~~~~~~~~~~~~~~~~~~
+
+✘ [ERROR] Detected cycle while resolving import "ROLE_TEMPLATES"
+
+    src/convex/career.ts:29:9:
+      29 │ import { ROLE_TEMPLATES, ROLE_REQUIREMENTS_VERSION } from "./lib/r...
+         ╵          ~~~~~~~~~~~~~~
+
+✘ [ERROR] Detected cycle while resolving import "ROLE_REQUIREMENTS_VERSION"
+
+    src/convex/career.ts:29:25:
+      29 │ ... { ROLE_TEMPLATES, ROLE_REQUIREMENTS_VERSION } from "./lib/roles";
+         ╵                       ~~~~~~~~~~~~~~~~~~~~~~~~~
+

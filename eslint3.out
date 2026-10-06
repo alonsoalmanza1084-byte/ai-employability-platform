@@ -1,0 +1,14 @@
+
+/home/daytona/codebase/src/convex/career.ts
+  317:31  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  333:29  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  355:8   error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  388:28  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  397:26  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  413:31  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  414:39  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  415:37  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  416:47  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+✖ 9 problems (9 errors, 0 warnings)
+

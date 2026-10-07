@@ -1,871 +1,3 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useAction, useMutation, useQuery } from "convex/react";
-import { useNavigate } from "react-router";
-import { Briefcase,
-  Check,
-  FileText,
-  GraduationCap,
-  LayoutDashboard,
-  LogOut,
-  MessageSquare,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Send,
-  Sparkles,
-  Trophy,
-  Trash,
-  X,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import { api } from "@/convex/_generated/api";
-import type { Doc, Id } from "@/convex/_generated/dataModel";
-import { useAuth } from "@/hooks/use-auth";
-import { CvUpload } from "@/components/CvUpload";
-
-type Profile = Doc<"candidateProfiles">;
-type ResumeGroup = { resume: Doc<"resumes">; versions: Doc<"resumeVersions">[] };
-
-/** Derivado: el objetivo profesional del usuario (target_role), si lo tiene. */
-function targetGoalFromGoals(goals: Doc<"careerGoals">[] | null | undefined) {
-  if (!goals) return null;
-  return goals.find((g) => g.kind === "target_role") ?? null;
-}
-
-function ScoreRing({ score, label }: { score: number; label: string }) {
-  return (
-    <div className="flex flex-col items-center gap-2">
-      <div
-        className="relative flex size-20 items-center justify-center rounded-full border border-border"
-        role="img"
-        aria-label={`${label}: ${score} de 100`}
-      >
-        <span className="text-2xl font-semibold tabular-nums">{score}</span>
-        <span className="absolute bottom-3 text-[10px] uppercase tracking-widest text-muted-foreground">
-          /100
-        </span>
-      </div>
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-    </div>
-  );
-}
-
-function Dimension({
-  label,
-  score,
-  children,
-}: {
-  label: string;
-  score: number;
-  children?: React.ReactNode;
-}) {
-  return (
-    <div>
-      <div className="flex items-baseline justify-between">
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-sm tabular-nums text-muted-foreground">{score}/100</p>
-      </div>
-      <Progress value={score} className="mt-2 h-1" />
-      {children}
-    </div>
-  );
-}
-
-function Diagnóstico({ profile }: { profile: Profile }) {
-  const d = profile.diagnosis;
-  const scores = [
-    { label: "Completitud", value: d?.completeness ?? 0 },
-    { label: "Impacto", value: d?.impact ?? 0 },
-    { label: "Skills", value: d?.skills ?? 0 },
-    { label: "Narrativa", value: d?.narrative ?? 0 },
-  ];
-
-  return (
-    <section aria-labelledby="diagnosis-title" className="mt-12">
-      <div className="hairline-b pb-4">
-        <p className="eyebrow">Diagnóstico de empleabilidad</p>
-        <h2 id="diagnosis-title" className="mt-1 text-xl font-semibold">
-          Dónde estás hoy
-        </h2>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Evaluación determinista sobre tu perfil actual. No es una promesa de
-          resultados: son señales de mejora con acciones concretas.
-          {!d?.hasSufficientData && " Aún hay pocos datos para algunas métricas."}
-        </p>
-      </div>
-
-      <div className="mt-6 grid grid-cols-2 gap-6 sm:grid-cols-4">
-        {scores.map((s) => (
-          <ScoreRing key={s.label} score={s.value} label={s.label} />
-        ))}
-      </div>
-
-      <div className="mt-8 grid gap-8 lg:grid-cols-2">
-        <div className="space-y-6">
-          {scores.map((s) => (
-            <Dimension key={s.label} label={s.label} score={s.value}>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {s.value >= 75
-                  ? "Fortaleza actual."
-                  : s.value >= 45
-                    ? "Rango intermedio: hay margen de mejora."
-                    : "Prioridad de mejora."}
-              </p>
-            </Dimension>
-          ))}
-        </div>
-
-        <div>
-          <h3 className="text-sm font-semibold">Oportunidades de mejora</h3>
-          {d?.opportunities?.length ? (
-            <ul className="mt-3 space-y-3">
-              {d.opportunities.map((o, i) => (
-                <li key={i} className="flex gap-3 text-sm">
-                  <Sparkles className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                  <div>
-                    <p className="font-medium capitalize">{o.dimension}</p>
-                    <p className="mt-0.5 text-muted-foreground">{o.reason}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-3 text-sm text-muted-foreground">
-              Sin oportunidades detectadas por ahora: tu perfil cubre lo básico.
-            </p>
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function SkillsEditor({ profile }: { profile: Profile }) {
-  const updateProfile = useMutation(api.candidates.updateProfile);
-  const [name, setName] = useState("");
-  const [level, setLevel] = useState(3);
-  const [busy, setBusy] = useState(false);
-
-  async function addSkill() {
-    if (!name.trim()) return;
-    setBusy(true);
-    try {
-      await updateProfile({
-        skills: [
-          ...profile.skills,
-          { name: name.trim(), level, source: "human" as const },
-        ],
-      });
-      setName("");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function removeSkill(skillName: string) {
-    setBusy(true);
-    try {
-      await updateProfile({
-        skills: profile.skills.filter((s) => s.name !== skillName),
-      });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div>
-      <div className="flex flex-wrap gap-2">
-        {profile.skills.map((s) => (
-          <Badge key={s.name} variant="secondary" className="gap-1.5 pr-1">
-            {s.name} · L{s.level}
-            {s.source === "human" && (
-              <span className="text-[10px] text-muted-foreground">(tú)</span>
-            )}
-            <button
-              aria-label={`Quitar ${s.name}`}
-              className="ml-0.5 rounded-full p-0.5 hover:bg-foreground/10"
-              onClick={() => void removeSkill(s.name)}
-              disabled={busy}
-            >
-              <X className="size-3" />
-            </button>
-          </Badge>
-        ))}
-        {profile.skills.length === 0 && (
-          <p className="text-sm text-muted-foreground">
-            Sin skills aún. Añade al menos las 5 principales.
-          </p>
-        )}
-      </div>
-      <div className="mt-3 flex gap-2">
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Añadir skill (ej. SQL)"
-          className="h-9 max-w-48"
-          onKeyDown={(e) => e.key === "Enter" && void addSkill()}
-        />
-        <select
-          aria-label="Nivel"
-          value={level}
-          onChange={(e) => setLevel(Number(e.target.value))}
-          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-        >
-          {[1, 2, 3, 4, 5].map((l) => (
-            <option key={l} value={l}>
-              Nivel {l}
-            </option>
-          ))}
-        </select>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void addSkill()}
-          disabled={busy || !name.trim()}
-        >
-          <Plus className="size-4" />
-          Añadir
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function BasicsEditor({ profile }: { profile: Profile }) {
-  const updateProfile = useMutation(api.candidates.updateProfile);
-  const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({
-    fullName: profile.fullName ?? "",
-    headline: profile.headline ?? "",
-    location: profile.location ?? "",
-    summary: profile.summary ?? "",
-    yearsExperience: String(profile.yearsExperience ?? ""),
-  });
-  const [busy, setBusy] = useState(false);
-
-  async function save() {
-    setBusy(true);
-    try {
-      await updateProfile({
-        fullName: form.fullName || undefined,
-        headline: form.headline || undefined,
-        location: form.location || undefined,
-        summary: form.summary || undefined,
-        yearsExperience: form.yearsExperience
-          ? Number(form.yearsExperience)
-          : undefined,
-      });
-      setEditing(false);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!editing) {
-    return (
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {profile.fullName || "Tu perfil"}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {profile.headline || "Sin titular profesional"}
-            {profile.location ? ` · ${profile.location}` : ""}
-            {profile.yearsExperience !== undefined
-              ? ` · ${profile.yearsExperience} años de experiencia`
-              : ""}
-          </p>
-          {profile.summary && (
-            <p className="mt-3 max-w-2xl text-sm leading-6">
-              {profile.summary}
-            </p>
-          )}
-        </div>
-        <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
-          <Pencil className="size-4" />
-          Editar
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label htmlFor="fullName">Nombre completo</Label>
-          <Input
-            id="fullName"
-            value={form.fullName}
-            onChange={(e) => setForm({ ...form, fullName: e.target.value })}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="headline">Titular profesional</Label>
-          <Input
-            id="headline"
-            value={form.headline}
-            onChange={(e) => setForm({ ...form, headline: e.target.value })}
-            placeholder="Ej. Analista de datos con 4 años en BI"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="location">Ubicación</Label>
-          <Input
-            id="location"
-            value={form.location}
-            onChange={(e) => setForm({ ...form, location: e.target.value })}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="years">Años de experiencia</Label>
-          <Input
-            id="years"
-            type="number"
-            min={0}
-            max={60}
-            value={form.yearsExperience}
-            onChange={(e) =>
-              setForm({ ...form, yearsExperience: e.target.value })
-            }
-          />
-        </div>
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="summary">Resumen profesional</Label>
-        <Textarea
-          id="summary"
-          rows={3}
-          value={form.summary}
-          onChange={(e) => setForm({ ...form, summary: e.target.value })}
-        />
-      </div>
-      <div className="flex gap-2">
-        <Button size="sm" onClick={() => void save()} disabled={busy}>
-          <Check className="size-4" />
-          Guardar
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
-          Cancelar
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function MiCv({ profile }: { profile: Profile }) {
-  return (
-    <section aria-labelledby="cv-title" className="mt-12">
-      <div className="hairline-b pb-4">
-        <p className="eyebrow">Mi CV</p>
-        <h2 id="cv-title" className="mt-1 text-xl font-semibold">
-          Versión estructurada
-        </h2>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Extraído por IA de tu CV activo y editable por ti. Los datos que
-          corriges prevalecen sobre los detectados automáticamente.
-        </p>
-      </div>
-
-      <div className="mt-8 grid gap-10 lg:grid-cols-2">
-        <div className="space-y-8">
-          <div>
-            <h3 className="flex items-center gap-2 text-sm font-semibold">
-              <Briefcase className="size-4 text-muted-foreground" />
-              Experiencia
-            </h3>
-            <ul className="mt-4 space-y-5">
-              {profile.experience.map((e, i) => (
-                <li key={i} className="border-l border-border pl-4">
-                  <p className="text-sm font-medium">{e.title}</p>
-                  <p className="text-sm text-muted-foreground">
-                    {e.company} · {e.start}
-                    {e.end ? ` – ${e.end}` : e.current ? " – actual" : ""}
-                  </p>
-                  {e.description && (
-                    <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
-                      {e.description}
-                    </p>
-                  )}
-                  {e.achievements.length > 0 && (
-                    <ul className="mt-2 space-y-1">
-                      {e.achievements.map((a, j) => (
-                        <li key={j} className="flex gap-2 text-sm">
-                          <span className="text-muted-foreground">—</span>
-                          {a}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </li>
-              ))}
-              {profile.experience.length === 0 && (
-                <li className="text-sm text-muted-foreground">
-                  Sin experiencia registrada.
-                </li>
-              )}
-            </ul>
-          </div>
-
-          <div>
-            <h3 className="flex items-center gap-2 text-sm font-semibold">
-              <GraduationCap className="size-4 text-muted-foreground" />
-              Educación
-            </h3>
-            <ul className="mt-4 space-y-3">
-              {profile.education.map((e, i) => (
-                <li key={i} className="text-sm">
-                  <p className="font-medium">
-                    {e.degree}
-                    {e.field ? ` — ${e.field}` : ""}
-                  </p>
-                  <p className="text-muted-foreground">
-                    {e.institution}
-                    {e.endYear ? ` · ${e.endYear}` : ""}
-                  </p>
-                </li>
-              ))}
-              {profile.education.length === 0 && (
-                <li className="text-sm text-muted-foreground">
-                  Sin educación registrada.
-                </li>
-              )}
-            </ul>
-          </div>
-        </div>
-
-        <div className="space-y-8">
-          <div>
-            <h3 className="flex items-center gap-2 text-sm font-semibold">
-              <Trophy className="size-4 text-muted-foreground" />
-              Certificaciones
-            </h3>
-            <ul className="mt-4 space-y-2">
-              {profile.certifications.map((c, i) => (
-                <li key={i} className="text-sm">
-                  {c.name}
-                  {c.issuer ? ` · ${c.issuer}` : ""}
-                  {c.year ? ` (${c.year})` : ""}
-                </li>
-              ))}
-              {profile.certifications.length === 0 && (
-                <li className="text-sm text-muted-foreground">
-                  Sin certificaciones registradas.
-                </li>
-              )}
-            </ul>
-          </div>
-
-          <div>
-            <h3 className="text-sm font-semibold">Skills</h3>
-            <div className="mt-4">
-              <SkillsEditor profile={profile} />
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/**
- * Career Coach IA (Incremento 1: SOLO LECTURA + Incremento 2: PROPOSALS).
- * Conversación sobre el perfil existente: el coach explica el diagnóstico,
- * pregunta y descubre huecos. No modifica el perfil ni el CV: cualquier
- * cambio se hace en «Mi CV» / «Diagnóstico».
- *
- * Incremento 2: cuando el coach propone una mejora, se registra como
- * PROPUESTA (estado pendiente) con evidencia validada en el servidor. La UI
- * la presenta como «Propuesta de mejora» pendiente de confirmación o
- * rechazada — jamás como aplicada ni verificada (INV-UI-001/009) — y solo el
- * dueño puede rechazarla (confirmación + mutation pública, sin optimistic
- * update). Estados soportados: pending | rejected.
- */
-function Coach() {
-  const state = useQuery(api.coach.getConversation);
-  const startConversation = useMutation(api.coach.startConversation);
-  const sendMessageWithProposals = useAction(api.coach.sendMessageWithProposals);
-  const rejectProposalByOwner = useMutation(api.coach.rejectProposalByOwner);
-  const proposals = useQuery(
-    api.coach.listProposals,
-    state?.conversation ? { conversationId: state.conversation._id } : "skip",
-  );
-  const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [rejectTarget, setRejectTarget] = useState<Id<"coachProposals"> | null>(
-    null,
-  );
-  const [rejecting, setRejecting] = useState<Id<"coachProposals"> | null>(null);
-  const [proposalError, setProposalError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
-  const messageCount = state?.messages.length ?? 0;
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [messageCount]);
-
-  async function handleStart() {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await startConversation({});
-      if (!res.ok) setError(res.reason);
-    } catch {
-      setError("No se pudo iniciar la conversación. Reintenta.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleSend() {
-    const text = draft.trim();
-    if (!text || busy || !state?.conversation) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await sendMessageWithProposals({
-        conversationId: state.conversation._id,
-        message: text,
-      });
-      if (res.ok) setDraft("");
-      else setError(res.reason);
-    } catch {
-      setError("No se pudo enviar el mensaje. Reintenta.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /**
-   * Rechazo confirmado de una propuesta pendiente. SIN optimistic update:
-   * el estado lo decide el servidor (pending → rejected) y la lista reactiva
-   * `listProposals` refresca tras el commit. Si el backend falla, se muestra
-   * el error real y la propuesta permanece «Pendiente de confirmación».
-   */
-  async function confirmReject() {
-    if (!rejectTarget || rejecting !== null) return; // anti doble click
-    setRejecting(rejectTarget);
-    setProposalError(null);
-    try {
-      const res = await rejectProposalByOwner({ proposalId: rejectTarget });
-      if (res.ok) {
-        // Éxito real del servidor: se cierra el diálogo; la query reactiva
-        // vuelve a pintar la lista (ya figura como «Rechazada»).
-        setRejectTarget(null);
-      } else {
-        // Error real (NOT_FOUND/INVALID_STATE): sin falso éxito.
-        setProposalError(res.reason);
-      }
-    } catch {
-      setProposalError("No se pudo rechazar la propuesta. Reintenta.");
-    } finally {
-      setRejecting(null);
-    }
-  }
-
-  return (
-    <section aria-labelledby="coach-title" className="mt-12">
-      <div className="hairline-b flex flex-wrap items-end justify-between gap-4 pb-4">
-        <div>
-          <p className="eyebrow">Career Coach IA</p>
-          <h2 id="coach-title" className="mt-1 text-xl font-semibold">
-            Conversa sobre tu perfil
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Tu coach lee tu perfil y tu diagnóstico para explicártelos,
-            preguntarte lo que haga falta y descubrir huecos. No modifica tu
-            perfil ni tu CV. Si te propone una mejora, la verás como propuesta
-            pendiente de confirmación: nunca se aplica sola.
-          </p>
-        </div>
-        {state && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void handleStart()}
-            disabled={busy}
-          >
-            <Plus className="size-4" />
-            Nueva conversación
-          </Button>
-        )}
-      </div>
-
-      {state === undefined ? (
-        <div className="flex min-h-40 items-center justify-center text-sm text-muted-foreground">
-          Cargando…
-        </div>
-      ) : state === null ? (
-        <div className="mt-8 flex flex-col items-center gap-4 rounded-lg border border-border p-10 text-center">
-          <div className="flex size-12 items-center justify-center rounded-full border border-border">
-            <MessageSquare className="size-5 text-muted-foreground" />
-          </div>
-          <p className="max-w-md text-sm text-muted-foreground">
-            Aún no has empezado. El coach parte de tu perfil actual: pregúntale
-            por tu diagnóstico, qué mejorar o qué contar en tu próximo CV.
-          </p>
-          <Button onClick={() => void handleStart()} disabled={busy}>
-            <Sparkles className="size-4" />
-            Empezar conversación
-          </Button>
-        </div>
-      ) : (
-        <>
-          <div className="mt-6 flex max-h-[28rem] flex-col gap-4 overflow-y-auto rounded-lg border border-border p-4">
-            {state.messages.length === 0 && (
-              <p className="text-sm text-muted-foreground">
-                Escribe tu primer mensaje para arrancar la conversación.
-              </p>
-            )}
-            {state.messages.map((m) =>
-              m.role === "user" ? (
-                <div
-                  key={m._id}
-                  className="max-w-[85%] self-end rounded-xl bg-secondary px-3.5 py-2 text-sm text-secondary-foreground"
-                >
-                  {m.content}
-                </div>
-              ) : (
-                <div
-                  key={m._id}
-                  className="max-w-[92%] self-start rounded-xl border border-border bg-card px-3.5 py-2.5"
-                >
-                  <p className="whitespace-pre-wrap text-sm leading-6">
-                    {m.content}
-                  </p>
-                  {m.observations && m.observations.length > 0 && (
-                    <ul className="mt-2 space-y-1 border-t border-border pt-2">
-                      {m.observations.map((o, i) => (
-                        <li
-                          key={i}
-                          className="flex gap-2 text-xs text-muted-foreground"
-                        >
-                          <Sparkles className="mt-0.5 size-3 shrink-0" />
-                          <span>{o}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {m.questions && m.questions.length > 0 && (
-                    <div className="mt-2 border-t border-border pt-2">
-                      <p className="text-xs font-medium">Para saber más</p>
-                      <ol className="mt-1 list-decimal space-y-1 pl-4 text-xs text-muted-foreground">
-                        {m.questions.map((q, i) => (
-                          <li key={i}>{q}</li>
-                        ))}
-                      </ol>
-                    </div>
-                  )}
-                </div>
-              ),
-            )}
-            <div ref={bottomRef} />
-          </div>
-
-          {proposals && proposals.proposals.length > 0 && (
-            <section
-              aria-label="Propuestas de mejora"
-              className="mt-6 rounded-lg border border-border p-4"
-            >
-              <p className="eyebrow">Propuestas de mejora</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                El coach propone mejoras basadas en evidencia de tu perfil
-                validada en el servidor. Son propuestas: nunca se aplican a tu
-                perfil ni a tu CV — tú decides.
-              </p>
-              <ul className="mt-3 space-y-3">
-                {proposals.proposals.map((p) => (
-                  <li
-                    key={p._id}
-                    className="rounded-md border border-border bg-card p-3"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-sm font-medium">
-                            Propuesta de mejora
-                          </p>
-                          {p.status === "pending" ? (
-                            <Badge variant="secondary">
-                              Pendiente de confirmación
-                            </Badge>
-                          ) : (
-                            <Badge
-                              variant="outline"
-                              className="text-muted-foreground"
-                            >
-                              Rechazada
-                            </Badge>
-                          )}
-                        </div>
-                        <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6">
-                          {p.proposedText}
-                        </p>
-                      </div>
-                      {p.status === "pending" && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            setProposalError(null);
-                            setRejectTarget(p._id);
-                          }}
-                          disabled={rejecting !== null}
-                        >
-                          Rechazar
-                        </Button>
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-              {proposalError && (
-                <p role="alert" className="mt-3 text-sm text-destructive">
-                  {proposalError}
-                </p>
-              )}
-            </section>
-          )}
-
-          <AlertDialog
-            open={rejectTarget !== null}
-            onOpenChange={(open) => {
-              if (!open && rejecting === null) setRejectTarget(null);
-            }}
-          >
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>¿Rechazar esta propuesta?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Se marcará como «Rechazada». No se modifica tu perfil ni tu
-                  CV: solo deja de estar pendiente de confirmación.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              {proposalError && (
-                <p role="alert" className="text-sm text-destructive">
-                  {proposalError}
-                </p>
-              )}
-              <AlertDialogFooter>
-                <AlertDialogCancel disabled={rejecting !== null}>
-                  Cancelar
-                </AlertDialogCancel>
-                <Button
-                  variant="destructive"
-                  onClick={() => void confirmReject()}
-                  disabled={rejecting !== null}
-                >
-                  {rejecting !== null ? "Rechazando…" : "Rechazar propuesta"}
-                </Button>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-
-          {error && (
-            <p role="alert" className="mt-3 text-sm text-destructive">
-              {error}
-            </p>
-          )}
-
-          <div className="mt-4 flex items-end gap-2">
-            <Textarea
-              rows={2}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              /* Espejo de LIMITS.coachUserMessageMaxChars (src/convex/lib/limits.ts). */
-              maxLength={1500}
-              placeholder="P. ej.: ¿Por qué mi impacto está en 40 y cómo lo mejoro?"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleSend();
-                }
-              }}
-            />
-            <Button
-              onClick={() => void handleSend()}
-              disabled={busy || !draft.trim()}
-            >
-              <Send className="size-4" />
-              {busy ? "Enviando…" : "Enviar"}
-            </Button>
-          </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Límite diario de mensajes. El coach solo lee tu perfil; no lo
-            modifica, y cualquier propuesta que haga requiere tu confirmación.
-          </p>
-        </>
-      )}
-    </section>
-  );
-type GapSkill = {
-  skill: string;
-  requiredLevel: number;
-  currentLevel?: number;
-  status:
-    | "meets_requirement"
-    | "gap"
-    | "missing_evidence"
-    | "insufficient_evidence";
-  evidenceRefs: string[];
-  explanation: string;
-};
-
-type GapResult = {
-  _id: Id<"gapAnalyses">;
-  analysis: {
-    targetId: string;
-    engineVersion: string;
-    generatedAt: number;
-    overallCoverage: number;
-    skills: GapSkill[];
-  };
-  computedAt: number;
-};
-
-type GoalSkillInput = {
-  name: string;
-  requiredLevel: number;
-  category?: string;
-};
-
-type RoleMatch = {
-  roleId: string;
-  label: string;
-  description: string;
-  matchVersion: string;
-  match: {
-    overall: number;
-    skills: number;
-    experience: number;
-    education: number;
-    requirements: Array<{
-      requirementId: string;
-      label: string;
-      met: boolean;
-      score: number;
-      evidence: string;
-      gap?: string;
-    }>;
-    engineVersion: string;
-  };
-};
 
 function nextActionFromGap(
   gap: GapResult | undefined,
@@ -916,7 +48,7 @@ function Carrera({
     value: string;
     skills?: GoalSkillInput[];
     source?: "user-provided" | "system-derived" | "ai-generated" | "proposed" | "verified";
-  }) => Promise<{ _id: Id<"careerGoals">; action: "created" | "updated" }>;
+  }) => Promise<{ _id: Id<"careerGoals"> | void; action: "created" | "updated" }>;
   removeGoal: (args: { goalId: Id<"careerGoals"> }) => Promise<{ ok: boolean }>;
   regenerate: (args: { targetId: Id<"careerGoals"> }) => Promise<{ ok: boolean; _id: Id<"gapAnalyses">; regenerated: boolean }>;
 }) {
@@ -943,7 +75,7 @@ function Carrera({
     setEditValue(targetGoal.value);
     const m = findRoleTemplateByLabel(targetGoal.value);
     setUseTemplate(!!m);
-    setTemplateSkills(m ? roleSkillsAsRequired(m) : (targetGoal.skills as GoalSkillInput[]));
+    setTemplateSkills(m ? roleSkillsAsRequired(m) : (targetGoal.skills as unknown as GoalSkillInput[]));
     setEditing(true);
   }
 
@@ -981,11 +113,17 @@ function Carrera({
   const skillsList = targetGoal?.skills ?? [];
   const coverage = gap?.analysis.overallCoverage;
   const gapSkills = gap?.analysis.skills ?? [];
-  const metSkills = gapSkills.filter((s) => s.status === "meets_requirement");
   const gapOnly = gapSkills.filter((s) => s.status === "gap");
   const weakSkills = gapSkills.filter(
     (s) => s.status === "missing_evidence" || s.status === "insufficient_evidence",
   );
+
+  const metSkills = gapSkills.filter((s) => s.status === "meets_requirement");
+  void gapSkills;
+  void skillsList;
+  void metSkills;
+  void gapOnly;
+  void weakSkills;
 
   return (
     <section aria-labelledby="carrera-title" className="mt-12">
@@ -1013,7 +151,7 @@ function Carrera({
                   <div className="mt-3 flex flex-wrap gap-2">
                     {skillsList.map((s) => (
                       <Badge key={s.name} variant="secondary" className="gap-1.5">
-                        {s.name} · nivel {s.requiredLevel}
+                        {s.name} · nivel {(s as GoalSkillInput).requiredLevel}
                       </Badge>
                     ))}
                   </div>
@@ -1335,7 +473,58 @@ function Carrera({
   );
 }
 
+type GapSkill = {
+  skill: string;
+  requiredLevel: number;
+  currentLevel?: number;
+  status:
+    | "meets_requirement"
+    | "gap"
+    | "missing_evidence"
+    | "insufficient_evidence";
+  evidenceRefs: string[];
+  explanation: string;
+};
 
+type GapResult = {
+  _id: Id<"gapAnalyses">;
+  analysis: {
+    targetId: string;
+    engineVersion: string;
+    generatedAt: number;
+    overallCoverage: number;
+    skills: GapSkill[];
+  };
+  computedAt: number;
+};
+
+type GoalSkillInput = {
+  name: string;
+  requiredLevel: number;
+  category?: string;
+};
+
+type RoleMatch = {
+  roleId: string;
+  label: string;
+  description: string;
+  matchVersion: string;
+  match: {
+    overall: number;
+    skills: number;
+    experience: number;
+    education: number;
+    requirements: Array<{
+      requirementId: string;
+      label: string;
+      met: boolean;
+      score: number;
+      evidence: string;
+      gap?: string;
+    }>;
+    engineVersion: string;
+  };
+};
 
 export default function Dashboard() {
   const { user, signOut } = useAuth();

@@ -23,7 +23,9 @@ import { computeMatch, type MatchRequirementInput } from "./lib/matching";
 import {
   computeGoalGap,
   type GapAnalysis,
+  type GapItem,
   type ProfileSkill,
+  type RequiredSkill,
 } from "./lib/gap";
 import { ROLE_TEMPLATES, ROLE_REQUIREMENTS_VERSION } from "./lib/roles";
 
@@ -83,18 +85,25 @@ export const myGapAnalysis = query({
       )
       .first();
 
-    // Las queries de Convex son de solo lectura: el cálculo es una función
-    // pura determinista (sin LLM) y aquí únicamente LEEMOS el caché.
-    // La persistencia ocurre en `regenerateGapAnalysis` (mutación).
-    const cacheFresh =
-      cached !== null &&
-      cached.analysis.generatedAt >= profile.updatedAt &&
-      cached.updatedAt >= profile.updatedAt;
-
+    // Las queries de Convex son de solo lectura (ADR-014-01).
+    // El cálculo es una función pura determinista (sin LLM), sin persistir.
+    // La persistencia queda exclusivamente en `regenerateGapAnalysis`.
     let analysis: GapAnalysis;
-    if (cacheFresh && cached) {
-      analysis = cached.analysis as GapAnalysis;
+    let usedCache = false;
+
+    if (
+      cached !== null &&
+      cached.userId === userId &&
+      cached.targetId === args.targetId &&
+      cached.analysis.generatedAt >= profile.updatedAt &&
+      cached.updatedAt >= profile.updatedAt
+    ) {
+      analysis = cached.analysis;
+      usedCache = true;
     } else {
+      // Cache stale o inexistente → computable determinísticamente in-memory.
+      // Si la DB tuviera cache de otro userId/targetId no alcanzable por este índice,
+      // nunca la expondríamos; ignoramos ese estado.
       analysis = computeGoalGap(
         profile.skills as ProfileSkill[],
         goalSkillsAsRequired(goal),
@@ -105,7 +114,7 @@ export const myGapAnalysis = query({
     return {
       _id: cached ? cached._id : null,
       analysis,
-      computedAt: cacheFresh && cached ? cached._creationTime : Date.now(),
+      computedAt: usedCache ? cached!._creationTime : Date.now(),
     };
   },
 });
@@ -321,17 +330,24 @@ export const regenerateGapAnalysis = mutation({
       args.targetId,
     );
 
-    const existing = await ctx.db
+    let existing = await ctx.db
       .query("gapAnalyses")
       .withIndex("by_target_user", (q) =>
         q.eq("targetId", args.targetId).eq("userId", userId),
       )
       .first();
 
+    // Stale-remove: cualquier gapAnalysis crasheado (misma targetId pero userId distinto)
+    // lo sobreescribimos con el ciclo de usuario actual; conservamos auditoría.
+    if (existing && existing.userId !== userId) {
+      existing = null;
+    }
+
+    const now = Date.now();
     if (existing) {
       await ctx.db.patch(existing._id, {
         analysis: analysis as any,
-        updatedAt: Date.now(),
+        updatedAt: now,
       });
       await audit(ctx, {
         actorUserId: userId,
@@ -347,8 +363,8 @@ export const regenerateGapAnalysis = mutation({
       userId,
       targetId: args.targetId,
       analysis: analysis as any,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
     });
     await audit(ctx, {
       actorUserId: userId,
@@ -382,8 +398,8 @@ function profileToExtraction(profile: ProfileDoc) {
  * Convierte las skills almacenadas en un goal a RequiredSkill[]
  * (la forma que espera computeGoalGap / el motor de brechas).
  */
-function goalSkillsAsRequired(goal: CareerGoalDoc) {
-  return goal.skills as Parameters<typeof computeGoalGap>[1];
+function goalSkillsAsRequired(goal: CareerGoalDoc): Parameters<typeof computeGoalGap>[1] {
+  return goal.skills.map((s) => ({ name: s.name, requiredLevel: s.requiredLevel, category: s.category ?? undefined }));
 }
 
 /**

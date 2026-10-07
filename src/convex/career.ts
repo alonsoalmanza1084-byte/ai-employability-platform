@@ -23,9 +23,7 @@ import { computeMatch, type MatchRequirementInput } from "./lib/matching";
 import {
   computeGoalGap,
   type GapAnalysis,
-  type GapItem,
   type ProfileSkill,
-  type RequiredSkill,
 } from "./lib/gap";
 import { ROLE_TEMPLATES, ROLE_REQUIREMENTS_VERSION } from "./lib/roles";
 

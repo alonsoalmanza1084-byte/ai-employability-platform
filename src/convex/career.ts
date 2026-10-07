@@ -16,7 +16,6 @@
 
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
 import { requireSelf } from "./lib/rbac";
 import { audit } from "./lib/audit";
 import { LIMITS } from "./lib/limits";
@@ -33,7 +32,6 @@ import type { Doc } from "./_generated/dataModel";
 // ─── Tipos locales (espejo del schema, para no acoplar al modelo genérico) ───
 
 type CareerGoalDoc = Doc<"careerGoals">;
-type GapAnalysisDoc = Doc<"gapAnalyses">;
 type ProfileDoc = Doc<"candidateProfiles">;
 
 // ─── Queries: lectura propia (requireSelf) ──────────────────────────────────
@@ -69,13 +67,6 @@ export const myGapAnalysis = query({
       throw new Error("Objetivo no encontrado");
     }
 
-    const cached = await ctx.db
-      .query("gapAnalyses")
-      .withIndex("by_target_user", (q) =>
-        q.eq("targetId", args.targetId).eq("userId", userId),
-      )
-      .first();
-
     const profile = await ctx.db
       .query("candidateProfiles")
       .withIndex("by_user", (q) => q.eq("userId", userId))
@@ -85,11 +76,36 @@ export const myGapAnalysis = query({
       throw new Error("Perfil no encontrado");
     }
 
-    const analysis = await computeOrUseCached(ctx, cached, profile, goal, userId);
+    const cached = await ctx.db
+      .query("gapAnalyses")
+      .withIndex("by_target_user", (q) =>
+        q.eq("targetId", args.targetId).eq("userId", userId),
+      )
+      .first();
+
+    // Las queries de Convex son de solo lectura: el cálculo es una función
+    // pura determinista (sin LLM) y aquí únicamente LEEMOS el caché.
+    // La persistencia ocurre en `regenerateGapAnalysis` (mutación).
+    const cacheFresh =
+      cached !== null &&
+      cached.analysis.generatedAt >= profile.updatedAt &&
+      cached.updatedAt >= profile.updatedAt;
+
+    let analysis: GapAnalysis;
+    if (cacheFresh && cached) {
+      analysis = cached.analysis as GapAnalysis;
+    } else {
+      analysis = computeGoalGap(
+        profile.skills as ProfileSkill[],
+        goalSkillsAsRequired(goal),
+        goal._id,
+      );
+    }
+
     return {
-      _id: analysis._id,
-      analysis: analysis.payload,
-      computedAt: analysis.computedAt,
+      _id: cached ? cached._id : null,
+      analysis,
+      computedAt: cacheFresh && cached ? cached._creationTime : Date.now(),
     };
   },
 });
@@ -346,61 +362,6 @@ export const regenerateGapAnalysis = mutation({
 });
 
 // ─── Helpers internos ───────────────────────────────────────────────────────
-
-/**
- * Compute gap analysis, utilisando caché existente cuando esté vigente.
- * Devuelve el `_id` del documento (nuevo o existente) + payload + instant.
- */
-async function computeOrUseCached(
-  ctx: any,
-  cached: GapAnalysisDoc | null,
-  profile: ProfileDoc,
-  goal: CareerGoalDoc,
-  userId: Id<"users">,
-): Promise<{ _id: Id<"gapAnalyses">; payload: GapAnalysis; computedAt: number }> {
-  const now = Date.now();
-
-  // Regeneramos si el perfil cambió recientemente respecto al análisis cacheado.
-  const profileUpdated = profile.updatedAt;
-  const stale =
-    !cached ||
-    !cached.analysis?.generatedAt ||
-    cached.analysis.generatedAt < profileUpdated ||
-    cached.updatedAt < profileUpdated;
-
-  let payload: GapAnalysis;
-  let _id: Id<"gapAnalyses">;
-
-  if (!stale && cached) {
-    payload = cached.analysis as GapAnalysis;
-    _id = cached._id;
-    return { _id, payload, computedAt: cached._creationTime };
-  }
-
-  payload = computeGoalGap(
-    profile.skills as ProfileSkill[],
-    goalSkillsAsRequired(goal),
-    goal._id,
-  );
-
-  if (cached) {
-    _id = await ctx.db.patch(cached._id, {
-      analysis: payload as any,
-      updatedAt: now,
-    });
-    return { _id, payload, computedAt: cached._creationTime };
-  }
-
-  _id = await ctx.db.insert("gapAnalyses", {
-    userId,
-    targetId: goal._id,
-    analysis: payload as any,
-    createdAt: now,
-    updatedAt: now,
-  });
-  return { _id, payload, computedAt: now };
-
-}
 
 /** Convierte un candidateProfile en la forma que espera computeMatch. */
 function profileToExtraction(profile: ProfileDoc) {

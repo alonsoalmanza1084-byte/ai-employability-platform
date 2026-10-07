@@ -16,13 +16,23 @@ import { CvUpload } from "@/components/CvUpload";
 
 type Profile = Doc<"candidateProfiles">;
 type ResumeGroup = { resume: Doc<"resumes">; versions: Doc<"resumeVersions">[] };
+/** Forma devuelta por `career.myCareerGoals` (doc propio sin campos internos). */
+type CareerGoalView = {
+  _id: Id<"careerGoals">;
+  kind: "target_role" | "aspiration" | "goal";
+  value: string;
+  skills: GoalSkillInput[];
+  source: "user-provided" | "system-derived" | "ai-generated" | "proposed" | "verified";
+  createdAt: number;
+  updatedAt: number;
+};
 
-function targetGoalFromGoals(goals: Doc<"careerGoals">[] | null | undefined) {
+function targetGoalFromGoals(goals: CareerGoalView[] | null | undefined) {
   if (!goals) return null;
   return goals.find((g) => g.kind === "target_role") ?? null;
 }
 
-export const ROLE_TEMPLATES: { id: string; label: string; description: string; skills: { name: string; requiredLevel: number; category?: string }[] }[] = [
+const ROLE_TEMPLATES: { id: string; label: string; description: string; skills: { name: string; requiredLevel: number; category?: string }[] }[] = [
   { id: "senior-frontend", label: "Senior Frontend Developer", description: "Frontend senior con arquitectura y leadership técnico.", skills: [{ name: "React", requiredLevel: 4 }, { name: "TypeScript", requiredLevel: 4 }, { name: "Testing", requiredLevel: 3 }, { name: "Architecture", requiredLevel: 3 }, { name: "Communication", requiredLevel: 3 }] },
   { id: "frontend-tech-lead", label: "Frontend Tech Lead", description: "Lidera equipos frontend y define arquitectura.", skills: [{ name: "React", requiredLevel: 4 }, { name: "TypeScript", requiredLevel: 4 }, { name: "Leadership", requiredLevel: 4 }, { name: "Architecture", requiredLevel: 4 }, { name: "Communication", requiredLevel: 4 }] },
   { id: "product-engineer", label: "Product Engineer", description: "Ingeniero orientado a producto y resultados de negocio.", skills: [{ name: "React", requiredLevel: 3 }, { name: "TypeScript", requiredLevel: 3 }, { name: "Product Sense", requiredLevel: 4 }, { name: "Communication", requiredLevel: 3 }, { name: "Data Analysis", requiredLevel: 2 }] },
@@ -94,7 +104,25 @@ function Coach() {
 
   async function handleStart() { setBusy(true); setError(null); try { const res = await startConversation({}); if (!res.ok) setError(res.reason); } catch { setError("No se pudo iniciar la conversación. Reintenta."); } finally { setBusy(false); } }
   async function handleSend() { const text = draft.trim(); if (!text || busy || !state?.conversation) return; setBusy(true); setError(null); try { const res = await sendMessageWithProposals({ conversationId: state.conversation._id, message: text }); if (res.ok) setDraft(""); else setError(res.reason); } catch { setError("No se pudo enviar el mensaje. Reintenta."); } finally { setBusy(false); } }
-  async function confirmReject() { if (!rejectTarget || rejecting !== null) return; setRejecting(rejectTarget); setProposalError(null); try { const res = await rejectProposalByOwner({ proposalId: rejectTarget }); if (res.ok) { setRejectTarget(null); } else { setProposalError(res.reason); } } catch { setProposalError("No se pudo rechazar la propuesta. Reintenta."); } finally { setRejecting(null); } }
+  async function confirmReject() {
+    if (!rejectTarget || rejecting !== null) return;
+    setRejecting(rejectTarget);
+    setProposalError(null);
+    try {
+      const res = await rejectProposalByOwner({ proposalId: rejectTarget });
+      if (res.ok) {
+        // Sin optimistic update: al cerrar, listProposals (reactiva) refresca.
+        setRejectTarget(null);
+      } else {
+        // Error real del backend: se anuncia, sin falso éxito (INV-UI-008).
+        setProposalError(res.reason);
+      }
+    } catch {
+      setProposalError("No se pudo rechazar la propuesta. Reintenta.");
+    } finally {
+      setRejecting(null);
+    }
+  }
 
   return (
     <section aria-labelledby="coach-title" className="mt-12">
@@ -174,10 +202,9 @@ function nextActionFromGap(gap: GapResult | undefined, profile: Profile | null |
   return `Revisa ${top.skill}: la detección es de baja confianza. Corrígela para que cuente como evidencia. ${top.explanation}`;
 }
 
-function Carrera({ profile, goals, targetGoal, gap, roles, setGoal, removeGoal, regenerate }: {
+function Carrera({ profile, targetGoal, gap, roles, setGoal, removeGoal, regenerate }: {
   profile: Profile;
-  goals: Doc<"careerGoals">[] | null | undefined;
-  targetGoal: Doc<"careerGoals"> | null;
+  targetGoal: CareerGoalView | null;
   gap: GapResult | undefined;
   roles: RoleMatch[] | undefined;
   setGoal: (args: { kind: "target_role" | "aspiration" | "goal"; value: string; skills?: GoalSkillInput[]; source?: "user-provided" | "system-derived" | "ai-generated" | "proposed" | "verified"; }) => Promise<{ _id: Id<"careerGoals"> | void; action: "created" | "updated" }>;
@@ -193,13 +220,11 @@ function Carrera({ profile, goals, targetGoal, gap, roles, setGoal, removeGoal, 
   const [removing, setRemoving] = useState(false);
   const suggested = editValue.trim() ? findRoleTemplateByLabel(editValue.trim()) : null;
 
-  function openNew() { setEditValue(""); const t = suggested; setUseTemplate(!!t); setTemplateSkills(t ? roleSkillsAsRequired(t) : []); setEditing(true); }
   function openEdit() { if (!targetGoal) return; setEditValue(targetGoal.value); const m = findRoleTemplateByLabel(targetGoal.value); setUseTemplate(!!m); setTemplateSkills(m ? roleSkillsAsRequired(m) : (targetGoal.skills as unknown as GoalSkillInput[])); setEditing(true); }
-  async function save() { if (!editValue.trim() || busy) return; setBusy(true); try { await setGoal({ kind: "target_role", value: editValue.trim(), skills: useTemplate && templateSkills.length > 0 ? templateSkills : [], source: "user-provided" }); setEditing(false); } finally { setBusy(false); } }
+  async function save() { if (!editValue.trim() || busy) return; setBusy(true); try { await setGoal({ kind: "target_role", value: editValue.trim(), ...(useTemplate && templateSkills.length > 0 ? { skills: templateSkills } : {}), source: "user-provided" }); setEditing(false); } finally { setBusy(false); } }
   async function remove() { if (!targetGoal || removing) return; setRemoving(true); try { await removeGoal({ goalId: targetGoal._id }); } finally { setRemoving(false); } }
   async function refreshGap() { if (!targetGoal) return; void regenerate({ targetId: targetGoal._id }); }
 
-  const skillsList = targetGoal?.skills ?? [];
   const skillsList = targetGoal?.skills ?? [];
 
   const coverage = gap?.analysis.overallCoverage;
@@ -207,7 +232,6 @@ function Carrera({ profile, goals, targetGoal, gap, roles, setGoal, removeGoal, 
   const metSkills = gapSkills.filter((s) => s.status === "meets_requirement");
   const gapOnly = gapSkills.filter((s) => s.status === "gap");
   const weakSkills = gapSkills.filter((s) => s.status === "missing_evidence" || s.status === "insufficient_evidence");
-  void gapSkills; void skillsList; void metSkills; void gapOnly; void weakSkills;
 
   return (
     <section aria-labelledby="carrera-title" className="mt-12">
@@ -239,7 +263,7 @@ function Carrera({ profile, goals, targetGoal, gap, roles, setGoal, removeGoal, 
                   <Input value={editValue} onChange={(e) => setEditValue(e.target.value)} placeholder="P. ej. Senior Frontend Developer" maxLength={120} autoFocus />
                   {suggested && (<p className="text-sm text-muted-foreground">Coincide con: <span className="font-medium">{suggested.label}</span> — {suggested.description}</p>)}
                   <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={useTemplate} disabled={!suggested ? false : undefined} onChange={(e) => setUseTemplate(e.target.checked)} className="mt-1 h-4 w-4 rounded border-input" /><span>Usar requisitos de referencia({suggested ? suggested.label : "personalizados"}){useTemplate && templateSkills.length > 0 && (<span className="text-muted-foreground"> · {templateSkills.length} skills</span>)}</span></label>
-                  <div className="flex gap-2"><Button size="sm" onClick={() => void save()} disabled={busy || !editValue.trim() || (suggested && !useTemplate)}><Check className="size-4" />Guardar objetivo</Button><Button variant="ghost" size="sm" onClick={() => setEditing(false)}>Cancelar</Button></div>
+                  <div className="flex gap-2"><Button size="sm" onClick={() => void save()} disabled={busy || !editValue.trim() || (Boolean(suggested) && !useTemplate)}><Check className="size-4" />Guardar objetivo</Button><Button variant="ghost" size="sm" onClick={() => setEditing(false)}>Cancelar</Button></div>
                 </div>
               ) : (
                 <div className="mt-3 space-y-3">
@@ -299,7 +323,7 @@ function Carrera({ profile, goals, targetGoal, gap, roles, setGoal, removeGoal, 
           <Input value={editValue} onChange={(e) => setEditValue(e.target.value)} placeholder="P. ej. Senior Frontend Developer" maxLength={120} autoFocus />
           {suggested && !targetGoal && (<p className="text-sm text-muted-foreground">Coincide con: <span className="font-medium">{suggested.label}</span> — {suggested.description}</p>)}
           <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={useTemplate} disabled={!suggested && !targetGoal ? false : undefined} onChange={(e) => setUseTemplate(e.target.checked)} className="mt-1 h-4 w-4 rounded border-input" /><span>Usar requisitos de referencia({suggested ? suggested.label : targetGoal ? "actuales" : "personalizados"}){useTemplate && templateSkills.length > 0 && (<span className="text-muted-foreground"> · {templateSkills.length} skills</span>)}</span></label>
-          <div className="flex gap-2"><Button size="sm" onClick={() => void save()} disabled={busy || !editValue.trim() || (suggested && !useTemplate)}><Check className="size-4" />Guardar</Button><Button variant="ghost" size="sm" onClick={() => setEditing(false)}>Cancelar</Button></div>
+          <div className="flex gap-2"><Button size="sm" onClick={() => void save()} disabled={busy || !editValue.trim() || (Boolean(suggested) && !useTemplate)}><Check className="size-4" />Guardar</Button><Button variant="ghost" size="sm" onClick={() => setEditing(false)}>Cancelar</Button></div>
         </div>
       )}
     </section>
@@ -307,7 +331,7 @@ function Carrera({ profile, goals, targetGoal, gap, roles, setGoal, removeGoal, 
 }
 
 type GapSkill = { skill: string; requiredLevel: number; currentLevel?: number; status: | "meets_requirement" | "gap" | "missing_evidence" | "insufficient_evidence"; evidenceRefs: string[]; explanation: string };
-type GapResult = { _id: Id<"gapAnalyses">; analysis: { targetId: string; engineVersion: string; generatedAt: number; overallCoverage: number; skills: GapSkill[] }; computedAt: number };
+type GapResult = { _id: Id<"gapAnalyses"> | null; analysis: { targetId: string; engineVersion: string; generatedAt: number; overallCoverage: number; skills: GapSkill[] }; computedAt: number };
 type GoalSkillInput = { name: string; requiredLevel: number; category?: string };
 type RoleMatch = { roleId: string; label: string; description: string; matchVersion: string; match: { overall: number; skills: number; experience: number; education: number; requirements: Array<{ requirementId: string; label: string; met: boolean; score: number; evidence: string; gap?: string }>; engineVersion: string } };
 
@@ -350,7 +374,7 @@ export default function Dashboard() {
           <>
             <div className="hairline-b mt-10 pb-8"><BasicsEditor profile={profile} /></div>
             <div role="tablist" aria-label="Secciones" className="mt-8 flex gap-1">
-              {([["diagnostico", "Diagnóstico"], ["cv", "Mi CV"], ["coach", "Coach"], ["carrera", "Carrera"] as const).map(([key, label]) => (
+              {([["diagnostico", "Diagnóstico"], ["cv", "Mi CV"], ["coach", "Coach"], ["carrera", "Carrera"]] as const).map(([key, label]) => (
                 <button key={key} role="tab" aria-selected={tab === key} onClick={() => setTab(key)} className={`rounded-md px-3 py-1.5 text-sm transition-colors ${tab === key ? "bg-secondary font-medium text-secondary-foreground" : "text-muted-foreground hover:text-foreground"}`}>{label}</button>
               ))}
             </div>
@@ -358,7 +382,7 @@ export default function Dashboard() {
               {tab === "diagnostico" && (<div><Diagnóstico profile={profile} />{diagnosis && !diagnosis.hasSufficientData && (<p className="mt-6 text-xs text-muted-foreground">Nota: el diagnóstico mejora con más datos del CV (experiencia con logros, skills y resumen).</p>)}</div>)}
               {tab === "cv" && <MiCv profile={profile} />}
               {tab === "coach" && <Coach />}
-              {tab === "carrera" && <Carrera profile={profile} goals={goals} targetGoal={targetGoal} gap={gap} roles={roles} setGoal={setGoal} removeGoal={removeGoal} regenerate={regenerate} />}
+              {tab === "carrera" && <Carrera profile={profile} targetGoal={targetGoal} gap={gap} roles={roles} setGoal={setGoal} removeGoal={removeGoal} regenerate={regenerate} />}
             </div>
             <div className="mt-4"><CvUpload versions={activeVersions} onVersionsChanged={() => {}} /></div>
           </>

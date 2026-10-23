@@ -41,9 +41,12 @@ Hash del stash: `1024fc32607ba3806452aa4ac2a8cd9bc17619e4`.
 - `auth.config.ts` usa `CONVEX_SITE_URL`; `docs/OPERATIONS.md` decía `SITE_URL`.
   Se documenta `CONVEX_SITE_URL` como variable de sistema de Convex, que puede no
   figurar en `env list --names-only`; no se cambiará el nombre del código.
-- Convex Auth `0.0.90` expone `Anonymous.profile` y el provider Email expone
-  `sendVerificationRequest`. T3 usará esos callbacks, con log sin PII bajo
-  `AUTH_DEBUG === "1"`; no se interceptará `auth.addHttpRoutes` ni su body.
+- Convex Auth `0.0.90` expone `Anonymous.profile` (API pública documentada en
+  [la fuente de la versión 0.0.90](https://github.com/get-convex/convex-auth/blob/v0.0.90/src/providers/Anonymous.ts));
+  es el callback público usado para registrar `AUTH_ATTEMPT` solo con
+  `AUTH_DEBUG === "1"`, sin PII. No se interceptó `auth.addHttpRoutes`, no se
+  leyó el body y no se accedió a headers. El provider Email también expone
+  `sendVerificationRequest`.
 
 ## Estado de verificación
 

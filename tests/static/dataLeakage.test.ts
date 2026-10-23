@@ -36,6 +36,7 @@ const CODE = [
   ...walk(TESTS, (f) => /\.(ts|tsx)$/.test(f)),
 ];
 const CONVEX_SRC = CODE.filter((f) => f.includes(join("src", "convex")));
+const AUTH_ATTEMPT_LOGGER = join(SRC, "convex", "auth", "authAttemptLogging.ts");
 const CLIENT_SRC = CODE.filter(
   (f) => f.includes(join("src")) && !f.includes(join("src", "convex")),
 );
@@ -100,11 +101,19 @@ const PII_LITERALS = [
 
   it("el servidor nunca usa console.* (ni en actions, ni en mutaciones)", () => {
     for (const f of CONVEX_SRC) {
+      if (f === AUTH_ATTEMPT_LOGGER) continue;
       const code = readFileSync(f, "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/\/\/.*$/gm, "");
       expect(code, `console.* en ${f}`).not.toMatch(/\bconsole\.(log|warn|error|info|debug|trace)\b/);
     }
+
+    const logger = readFileSync(AUTH_ATTEMPT_LOGGER, "utf8");
+    expect(logger).toContain('if (process.env.AUTH_DEBUG !== "1") return;');
+    expect(logger).toContain(
+      'console.info("AUTH_ATTEMPT", { provider, ts: Date.now() });',
+    );
+    expect(logger.match(/console\./g)).toHaveLength(1);
   });
 
   it("el cliente tampoco registra datos sensibles de la sesión", () => {

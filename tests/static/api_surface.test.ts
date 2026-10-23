@@ -127,8 +127,16 @@ describe("defensa contra mass assignment (audit A-03)", () => {
 describe("higiene de logging y secretos (DATA LEAKAGE)", () => {
   it("ningún módulo del servidor usa console.* (ni logs de CVs, tokens o claves)", () => {
     for (const { file, code } of allConvexSources()) {
+      if (file === "auth/authAttemptLogging.ts") continue;
       expect(code.match(/console\.(log|info|debug|warn|error)\s*\(/), `en ${file}`).toBeNull();
     }
+
+    const authAttemptLogger = read("auth/authAttemptLogging.ts");
+    expect(authAttemptLogger).toContain('if (process.env.AUTH_DEBUG !== "1") return;');
+    expect(authAttemptLogger).toContain(
+      'console.info("AUTH_ATTEMPT", { provider, ts: Date.now() });',
+    );
+    expect(authAttemptLogger.match(/console\./g)).toHaveLength(1);
   });
 
   it("ningún módulo imprime ni devuelve texto extraído de CVs vía audit metadata", () => {

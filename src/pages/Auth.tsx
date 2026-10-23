@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/input-otp";
 
 import { useAuth } from "@/hooks/use-auth";
+import { logAuthError } from "@/lib/authLogging";
 import logo from "@/assets/logo.svg";
 import { ArrowRight, Loader2, Mail, UserX } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
@@ -22,6 +23,16 @@ import { useNavigate, useSearchParams } from "react-router";
 
 interface AuthProps {
   redirectAfterAuth?: string;
+}
+
+function authErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+  const code = error.code;
+  return typeof code === "string" || typeof code === "number"
+    ? String(code)
+    : undefined;
 }
 
 function resolveRedirectAfterAuth(
@@ -93,7 +104,12 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     try {
       await signIn("anonymous");
       navigate(redirect);
-    } catch {
+    } catch (error) {
+      logAuthError({
+        provider: "anonymous",
+        message: error instanceof Error ? error.message : String(error),
+        code: authErrorCode(error),
+      });
       setError("Failed to sign in as guest. Please try again.");
       setIsLoading(false);
     }

@@ -93,11 +93,12 @@ export default defineConfig({
   },
   // Performance hints
   server: {
-    // Bind to all interfaces so the browser runtime's server-ready event fires.
-    host: true,
+    host: "0.0.0.0",
     port: 5173,
+    allowedHosts: [".app.github.dev", ".githubpreview.dev"],
     // Keep HMR on, but disable full-screen error overlay
     hmr: {
+      clientPort: 443,
       overlay: false,
     },
   },

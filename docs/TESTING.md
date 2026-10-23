@@ -23,6 +23,22 @@
 | Billing/webhooks | firma, replay, idempotencia | fase 6 (diseño en BILLING.md) |
 | Data deletion | eliminar cuenta borra CVs + anonimiza aplicaciones | fase 7 |
 
+### Carga de CV: límites y autenticación
+
+- Se aceptan archivos con extensión PDF, DOCX o TXT, hasta 10 MiB
+	(`10 * 1024 * 1024` bytes). El backend vuelve a comprobar tamaño y extensión;
+	el parser identifica el formato a partir del contenido, no confía en el MIME
+	declarado por el navegador.
+- La carga de candidato limita a 10 CV por usuario al día. La carga para una
+	organización limita a 50 CV al día y además requiere membresía de recruiter.
+- Convex Auth incluye el proveedor Anonymous. Una sesión creada con ese
+	proveedor es un usuario autenticado y puede usar la carga propia; una petición
+	sin sesión sigue denegada. No se debe relajar `requireUser` para solucionar
+	errores de red.
+- El flujo del navegador obtiene una URL firmada de Convex y envía el archivo
+	directamente al storage de Convex. Un 502 del puerto de Vite no indica por sí
+	mismo que el límite de archivo haya provocado un fallo del servidor.
+
 ## 3. AI evaluation tests
 
 - Golden set de 20 CVs sintéticos (varios formatos/idiomas) con extracción esperada; precisión ≥ 90% de campos clave antes de subir cambios de prompt (fase 8).

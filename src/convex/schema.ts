@@ -502,6 +502,8 @@ const schema = defineSchema(
     gapAnalyses: defineTable({
       userId: v.id("users"),
       targetId: v.id("careerGoals"),
+      // Opcional para históricos; ausencia implica caché obsoleta.
+      inputFingerprint: v.optional(v.string()),
       analysis: v.object({
         targetId: v.id("careerGoals"),
         engineVersion: v.string(),

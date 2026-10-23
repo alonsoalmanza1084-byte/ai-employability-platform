@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/input-otp";
 
 import { useAuth } from "@/hooks/use-auth";
+import { logAuthError } from "@/lib/authLogging";
 import logo from "@/assets/logo.svg";
 import { ArrowRight, Loader2, Mail, UserX } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
@@ -22,35 +23,6 @@ import { useNavigate, useSearchParams } from "react-router";
 
 interface AuthProps {
   redirectAfterAuth?: string;
-}
-
-function sanitizeAuthLogValue(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  return value
-    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(
-      /((?:access[_ -]?token|refresh[_ -]?token|token|otp|code|authorization|cookie|set-cookie|x-api-key|api[_ -]?key)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
-      "$1[REDACTED]",
-    )
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[REDACTED_EMAIL]")
-    .slice(0, 300);
-}
-
-function logAuthError({
-  provider,
-  message,
-  code,
-}: {
-  provider: string;
-  message: string;
-  code?: string;
-}) {
-  if (!import.meta.env.DEV) return;
-  console.error("[auth] sign-in failed", {
-    provider,
-    message: sanitizeAuthLogValue(message),
-    code: sanitizeAuthLogValue(code),
-  });
 }
 
 function authErrorCode(error: unknown): string | undefined {

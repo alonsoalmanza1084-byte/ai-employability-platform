@@ -24,6 +24,45 @@ interface AuthProps {
   redirectAfterAuth?: string;
 }
 
+function sanitizeAuthLogValue(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return value
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+    .replace(
+      /((?:access[_ -]?token|refresh[_ -]?token|token|otp|code|authorization|cookie|set-cookie|x-api-key|api[_ -]?key)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1[REDACTED]",
+    )
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[REDACTED_EMAIL]")
+    .slice(0, 300);
+}
+
+function logAuthError({
+  provider,
+  message,
+  code,
+}: {
+  provider: string;
+  message: string;
+  code?: string;
+}) {
+  if (!import.meta.env.DEV) return;
+  console.error("[auth] sign-in failed", {
+    provider,
+    message: sanitizeAuthLogValue(message),
+    code: sanitizeAuthLogValue(code),
+  });
+}
+
+function authErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+  const code = error.code;
+  return typeof code === "string" || typeof code === "number"
+    ? String(code)
+    : undefined;
+}
+
 function resolveRedirectAfterAuth(
   returnTo: string | null,
   fallback = "/dashboard",
@@ -93,7 +132,12 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     try {
       await signIn("anonymous");
       navigate(redirect);
-    } catch {
+    } catch (error) {
+      logAuthError({
+        provider: "anonymous",
+        message: error instanceof Error ? error.message : String(error),
+        code: authErrorCode(error),
+      });
       setError("Failed to sign in as guest. Please try again.");
       setIsLoading(false);
     }

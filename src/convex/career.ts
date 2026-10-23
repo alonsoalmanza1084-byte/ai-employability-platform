@@ -22,8 +22,9 @@ import { LIMITS } from "./lib/limits";
 import { computeMatch, type MatchRequirementInput } from "./lib/matching";
 import {
   computeGoalGap,
+  fingerprintGoalGapInputs,
+  GAP_ENGINE_VERSION,
   type GapAnalysis,
-  type ProfileSkill,
 } from "./lib/gap";
 import { ROLE_TEMPLATES, ROLE_REQUIREMENTS_VERSION } from "./lib/roles";
 
@@ -33,6 +34,22 @@ import type { Doc } from "./_generated/dataModel";
 
 type CareerGoalDoc = Doc<"careerGoals">;
 type ProfileDoc = Doc<"candidateProfiles">;
+
+function goalGapInputs(profile: ProfileDoc, goal: CareerGoalDoc) {
+  return {
+    profileSkills: profile.skills,
+    requiredSkills: goalSkillsAsRequired(goal),
+    targetId: goal._id,
+  };
+}
+
+function computeGoalGapForInputs(inputs: ReturnType<typeof goalGapInputs>) {
+  return computeGoalGap(
+    inputs.profileSkills,
+    inputs.requiredSkills,
+    inputs.targetId,
+  );
+}
 
 // ─── Queries: lectura propia (requireSelf) ──────────────────────────────────
 
@@ -76,6 +93,13 @@ export const myGapAnalysis = query({
       throw new Error("Perfil no encontrado");
     }
 
+    const inputs = goalGapInputs(profile, goal);
+    const inputFingerprint = await fingerprintGoalGapInputs(
+      inputs.profileSkills,
+      inputs.requiredSkills,
+      inputs.targetId,
+    );
+
     const cached = await ctx.db
       .query("gapAnalyses")
       .withIndex("by_target_user", (q) =>
@@ -93,8 +117,9 @@ export const myGapAnalysis = query({
       cached !== null &&
       cached.userId === userId &&
       cached.targetId === args.targetId &&
-      cached.analysis.generatedAt >= profile.updatedAt &&
-      cached.updatedAt >= profile.updatedAt
+      cached.analysis?.targetId === goal._id &&
+      cached.analysis?.engineVersion === GAP_ENGINE_VERSION &&
+      cached.inputFingerprint === inputFingerprint
     ) {
       analysis = cached.analysis;
       usedCache = true;
@@ -102,11 +127,7 @@ export const myGapAnalysis = query({
       // Cache stale o inexistente → computable determinísticamente in-memory.
       // Si la DB tuviera cache de otro userId/targetId no alcanzable por este índice,
       // nunca la expondríamos; ignoramos ese estado.
-      analysis = computeGoalGap(
-        profile.skills as ProfileSkill[],
-        goalSkillsAsRequired(goal),
-        goal._id,
-      );
+      analysis = computeGoalGapForInputs(inputs);
     }
 
     return {
@@ -322,11 +343,13 @@ export const regenerateGapAnalysis = mutation({
       .first();
     if (!profile) throw new Error("Perfil no encontrado.");
 
-    const analysis = computeGoalGap(
-      profile.skills as ProfileSkill[],
-      goal.skills as Parameters<typeof computeGoalGap>[1],
-      args.targetId,
+    const inputs = goalGapInputs(profile, goal);
+    const inputFingerprint = await fingerprintGoalGapInputs(
+      inputs.profileSkills,
+      inputs.requiredSkills,
+      inputs.targetId,
     );
+    const analysis = computeGoalGapForInputs(inputs);
 
     let existing = await ctx.db
       .query("gapAnalyses")
@@ -344,7 +367,8 @@ export const regenerateGapAnalysis = mutation({
     const now = Date.now();
     if (existing) {
       await ctx.db.patch(existing._id, {
-        analysis: analysis as any,
+        analysis,
+        inputFingerprint,
         updatedAt: now,
       });
       await audit(ctx, {
@@ -360,7 +384,8 @@ export const regenerateGapAnalysis = mutation({
     const inserted = await ctx.db.insert("gapAnalyses", {
       userId,
       targetId: args.targetId,
-      analysis: analysis as any,
+      inputFingerprint,
+      analysis,
       createdAt: now,
       updatedAt: now,
     });

@@ -45,8 +45,8 @@ export type GapItem = {
   explanation: string;
 };
 
-export type GapAnalysis = {
-  targetId: string;
+export type GapAnalysis<TargetId extends string = string> = {
+  targetId: TargetId;
   engineVersion: string;
   generatedAt: number;
   overallCoverage: number;
@@ -55,6 +55,33 @@ export type GapAnalysis = {
 
 /** Versión del motor de brechas (deterministic). */
 export const GAP_ENGINE_VERSION = "gap-deterministic-v1";
+
+/** Huella exacta de los datos que influyen en el resultado del motor. */
+export async function fingerprintGoalGapInputs(
+  profileSkills: ProfileSkill[],
+  requiredSkills: RequiredSkill[],
+  targetId: string,
+): Promise<string> {
+  const input = JSON.stringify({
+    engineVersion: GAP_ENGINE_VERSION,
+    targetId,
+    // El orden importa: bestMatch conserva el primer skill cuando hay empate.
+    profileSkills: profileSkills.map((skill) => [
+      skill.name,
+      skill.level,
+      skill.confidence ?? 1,
+      skill.evidence || null,
+    ]),
+    requiredSkills: requiredSkills.map((skill) => [skill.name, skill.requiredLevel]),
+  });
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
 
 /** Normaliza nombre de skill para comparación (ignora acentos, case, espacios). */
 function norm(s: string): string {
@@ -102,11 +129,11 @@ function bestMatch(
  * `targetId` identifica el goal (careerGoals) para trazabilidad; no se usa en
  * lógica, solo en la salida auditable.
  */
-export function computeGoalGap(
+export function computeGoalGap<TargetId extends string>(
   profileSkills: ProfileSkill[],
   requiredSkills: RequiredSkill[],
-  targetId: string,
-): GapAnalysis {
+  targetId: TargetId,
+): GapAnalysis<TargetId> {
   const items: GapItem[] = [];
   const now = Date.now();
 

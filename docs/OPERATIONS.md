@@ -81,7 +81,7 @@ recolección y la alerta no están construidas).
 | `PRODUCTION_ENVIRONMENT` | **NOT_VERIFIED** | Solo existe un deployment de staging/desarrollo (`hip-porpoise-838`) |
 | `DOMAIN` | **NOT_VERIFIED** | No hay dominio productivo configurado |
 | `AUTH` | **BLOCKED** | `JWT_PRIVATE_KEY` y `JWKS` presentes en desarrollo; falta despliegue productivo |
-| `EMAIL` | **BLOCKED** | `VLY_EMAIL_API_KEY` **ausente** → el OTP falla cerrado |
+| `EMAIL` | **BLOCKED** | `AUTH_RESEND_KEY` y `VLY_EMAIL_API_KEY` no aparecen en el deployment de desarrollo observado; el OTP falla cerrado |
 | `AI_PROVIDER` | **PARTIAL** | `VLY_INTEGRATION_KEY` presente y funcionando; `OPENAI_API_KEY` ausente |
 | `SECRET_STORE` | **NOT_VERIFIED** | Sin gestor de secretos ni rotación configurada |
 | `BACKUPS` | **PARTIAL** | Mecanismo verificado; sin automatización, frecuencia ni retención |
@@ -109,6 +109,11 @@ renombrarse como `SITE_URL`.
 | Síntoma | Verificaciones |
 |---|---|
 | Guest falla | Verificar `CONVEX_SITE_URL` en el deployment y que `VITE_CONVEX_URL` apunte al deployment de desarrollo correcto |
+
+El pre-flight consultó únicamente los nombres del deployment de desarrollo con
+`npx --no-install convex env list --names-only`; ni `AUTH_RESEND_KEY` ni
+`VLY_EMAIL_API_KEY` aparecen. Para habilitar el envío OTP, una persona debe
+configurar `AUTH_RESEND_KEY` con `npx convex env set AUTH_RESEND_KEY <valor>`.
 
 ---
 
